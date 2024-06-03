@@ -5,7 +5,7 @@ members = ["./protobug", "./protogen"]
 [workspace.package]
 authors = ["Rob Ede <robjtede@icloud.com>"]
 edition = "2021"
-rust-version = "1.72"
+rust-version = "1.75"
 
 [workspace.dependencies]
 base64 = "0.22"
