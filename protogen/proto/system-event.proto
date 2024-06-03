@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+
+message SystemEvent {
+    google.protobuf.Timestamp timestamp = 1;
+
+    optional string reason = 2;
+
+    oneof event {
+        ClickEvent click = 10;
+    };
+}
+
+message ClickEvent {
+    ClickButton button = 1;
+    uint32 x = 2;
+    uint32 y = 3;
+}
+
+enum ClickButton {
+    Left = 0;
+    Right = 1;
+}

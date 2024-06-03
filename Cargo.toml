@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = ["./protobug", "./protogen"]
+
+[workspace.package]
+authors = ["Rob Ede <robjtede@icloud.com>"]
+edition = "2021"
+rust-version = "1.72"
+
+[workspace.dependencies]
+base64 = "0.22"
+camino = "1"
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.27"
+error-stack = "0.4"
+hex = "0.4"
+protobuf = "3"
+protobuf-codegen = "3"
+ratatui = "0.26"
+
+[workspace.lints.rust]
+future_incompatible = "deny"
+rust_2018_idioms = "deny"
+nonstandard_style = "deny"

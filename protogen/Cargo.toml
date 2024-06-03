@@ -1,0 +1,19 @@
+[package]
+name = "protogen"
+publish = false
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[dependencies]
+base64.workspace = true
+hex.workspace = true
+protobuf.workspace = true
+
+[build-dependencies]
+protobuf.workspace = true
+protobuf-codegen.workspace = true
+
+[lints]
+workspace = true
