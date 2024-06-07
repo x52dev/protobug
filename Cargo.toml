@@ -20,5 +20,5 @@ ratatui = "0.26"
 
 [workspace.lints.rust]
 future_incompatible = "deny"
-rust_2018_idioms = "deny"
 nonstandard_style = "deny"
+rust_2018_idioms = "deny"

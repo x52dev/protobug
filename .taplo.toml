@@ -6,14 +6,19 @@ column_width = 100
 
 [[rule]]
 include = ["**/Cargo.toml"]
-keys = ["dependencies", "*-dependencies"]
+keys = ["workspace.lints.*", "workspace.dependencies", "dependencies", "*-dependencies"]
 
 [rule.formatting]
 reorder_keys = true
 
 [[rule]]
 include = ["**/Cargo.toml"]
-keys = ["dependencies.*", "*-dependencies.*"]
+keys = [
+  "workspace.*-dependencies",
+  "workspace.*-dependencies.*",
+  "dependencies.*",
+  "*-dependencies.*",
+]
 
 [rule.formatting]
 reorder_keys = false
