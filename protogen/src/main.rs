@@ -6,7 +6,7 @@ use protobuf::{
     SpecialFields,
 };
 use protogen::system_event::{
-    system_event::{ClickButton, ClickEvent, Event as SystemEventVariant},
+    system_event::{Event as SystemEventVariant, MouseButton, MouseDown},
     SystemEvent,
 };
 
@@ -18,8 +18,8 @@ fn main() {
             special_fields: SpecialFields::default(),
         }),
         reason: Some("user clicked".to_owned()),
-        event: Some(SystemEventVariant::Click(ClickEvent {
-            button: EnumOrUnknown::new(ClickButton::Right),
+        event: Some(SystemEventVariant::Click(MouseDown {
+            button: EnumOrUnknown::new(MouseButton::Left),
             x: 42,
             y: 100,
             ..Default::default()

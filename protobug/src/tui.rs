@@ -1,14 +1,16 @@
 use std::{fmt::Write as _, io};
 
 use crossterm::{
-    event::{self, KeyCode, KeyModifiers},
-    terminal,
+    event::{self, KeyCode, KeyEvent, KeyModifiers},
+    execute, terminal,
 };
+use protobuf::{reflect::MessageDescriptor, text_format};
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, BorderType, Borders, Paragraph},
     Terminal,
 };
+use tui_textarea::TextArea;
 
 use crate::line_wrap::LineWrap;
 
@@ -16,35 +18,49 @@ pub type Tui = Terminal<CrosstermBackend<io::Stdout>>;
 
 /// Sets up terminal for TUI display.
 pub(crate) fn init() -> io::Result<Tui> {
-    // execute!(io::stdout(), terminal::EnterAlternateScreen)?;
+    execute!(io::stdout(), terminal::EnterAlternateScreen)?;
     terminal::enable_raw_mode()?;
-    Terminal::with_options(
-        CrosstermBackend::new(io::stdout()),
-        TerminalOptions {
-            viewport: Viewport::Inline(24),
-        },
-    )
+    Terminal::new(CrosstermBackend::new(io::stdout()))
 }
 
 /// Restores terminal to original state..
 pub(crate) fn restore() -> io::Result<()> {
-    // execute!(io::stdout(), terminal::LeaveAlternateScreen)?;
+    execute!(io::stdout(), terminal::LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;
     Ok(())
 }
 
-pub(crate) struct App {
-    data: Vec<u8>,
-    wrap_at: usize,
+pub(crate) struct App<'a> {
+    md: MessageDescriptor,
+    data: Box<dyn protobuf::MessageDyn>,
+    json_editor: TextArea<'a>,
     exit: bool,
 }
 
-impl App {
+impl App<'_> {
     /// Constructs new TUI app widget.
-    pub(crate) fn new(data: Vec<u8>, wrap_at: usize) -> Self {
+    pub(crate) fn new(md: MessageDescriptor, data: Box<dyn protobuf::MessageDyn>) -> Self {
+        let json = protobuf_json_mapping::print_to_string_with_options(
+            &*data,
+            &protobuf_json_mapping::PrintOptions {
+                enum_values_int: false,
+                proto_field_name: false,
+                always_output_default_values: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let json = serde_json::to_string_pretty(
+            &serde_json::from_str::<serde_json::Value>(&json).unwrap(),
+        )
+        .unwrap();
+
+        let json_editor = TextArea::new(json.lines().map(ToOwned::to_owned).collect());
+
         Self {
+            md,
             data,
-            wrap_at,
+            json_editor,
             exit: false,
         }
     }
@@ -60,17 +76,23 @@ impl App {
     }
 
     fn render_frame(&mut self, frame: &mut Frame<'_>) {
-        let layout = Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]);
+        let layout = Layout::horizontal(Constraint::from_fills([1, 1]));
+        let left_layout = Layout::vertical(Constraint::from_fills([1, 1, 1]));
         let [left_area, right_area] = layout.areas(frame.size());
+        let [top_left_area, middle_left_area, bottom_left_area] = left_layout.areas(left_area);
 
-        let hex_repr = self.data.iter().fold(String::new(), |mut buf, byte| {
+        let tf_repr = text_format::print_to_string_pretty(&*self.data);
+
+        let bytes = self.data.write_to_bytes_dyn().unwrap();
+
+        let hex_repr = bytes.iter().fold(String::new(), |mut buf, byte| {
             write!(buf, "{byte:02x} ").expect("Formatting to strings should always be possible");
             buf
         });
 
-        let hex_repr_wrapped = LineWrap::new(hex_repr, self.wrap_at * 3).to_string();
+        let hex_repr_wrapped = LineWrap::new(hex_repr, 16 * 3).to_string();
 
-        let ascii_repr = self.data.iter().fold(String::new(), |mut buf, byte| {
+        let ascii_repr = bytes.iter().fold(String::new(), |mut buf, byte| {
             let preview = match byte {
                 byte if byte.is_ascii_whitespace() => ' ',
                 byte if byte.is_ascii_graphic() => char::from(*byte),
@@ -83,22 +105,21 @@ impl App {
             buf
         });
 
-        let ascii_repr_wrapped = LineWrap::new(ascii_repr, self.wrap_at).to_string();
+        let ascii_repr_wrapped = LineWrap::new(ascii_repr, 16).to_string();
 
-        // assert_eq!(
-        //     hex_lines, ascii_lines,
-        //     "Hex and ASCII outputs differ in size",
-        // );
-
-        let left_para = Paragraph::new(hex_repr_wrapped);
-        let right_para = Paragraph::new(ascii_repr_wrapped);
+        let para_tf = Paragraph::new(tf_repr);
+        let para_hex = Paragraph::new(hex_repr_wrapped);
+        let para_ascii = Paragraph::new(ascii_repr_wrapped);
 
         let right_block = Block::default()
             .borders(Borders::LEFT)
-            .border_type(ratatui::widgets::BorderType::Plain);
+            .border_type(BorderType::Plain);
 
-        frame.render_widget(left_para, left_area);
-        frame.render_widget(right_para, right_block.inner(right_area));
+        frame.render_widget(para_tf, top_left_area);
+        frame.render_widget(para_hex, middle_left_area);
+        frame.render_widget(para_ascii, bottom_left_area);
+
+        frame.render_widget(self.json_editor.widget(), right_block.inner(right_area));
         frame.render_widget(right_block, right_area);
     }
 
@@ -106,8 +127,23 @@ impl App {
         match event::read()? {
             // check that the event is a key press event as crossterm also emits
             // key release and repeat events on Windows
-            event::Event::Key(ev) if ev.kind == event::KeyEventKind::Press => {
-                self.handle_key_event(ev);
+            event::Event::Key(
+                ev @ KeyEvent {
+                    code: KeyCode::Char('c'),
+                    ..
+                },
+            ) if ev.kind == event::KeyEventKind::Press
+                && ev.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.exit = true;
+            }
+
+            input => {
+                self.json_editor.input(input);
+                let json = self.json_editor.lines().join(" ");
+                if let Ok(msg) = protobuf_json_mapping::parse_dyn_from_str(&self.md, &json) {
+                    self.data = msg;
+                }
             }
 
             _ => {}
@@ -116,16 +152,12 @@ impl App {
         Ok(())
     }
 
-    fn handle_key_event(&mut self, ev: event::KeyEvent) {
-        match ev.code {
-            KeyCode::Right => self.wrap_at += 1,
-            KeyCode::Left => self.wrap_at -= 1,
+    // fn handle_key_event(&mut self, ev: event::KeyEvent) {
+    //     match ev.code {
+    //         // exit (ctrl-c
+    //         KeyCode::Char('c') if ev.modifiers.contains(KeyModifiers::CONTROL) => self.exit,
 
-            // exit (q or ctrl-c)
-            KeyCode::Char('q') => self.exit = true,
-            KeyCode::Char('c') if ev.modifiers.contains(KeyModifiers::CONTROL) => self.exit = true,
-
-            _ => {}
-        }
-    }
+    //         _ => {}
+    //     }
+    // }
 }

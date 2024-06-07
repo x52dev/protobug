@@ -96,13 +96,10 @@ fn inspect(schema: Utf8PathBuf, file: Utf8PathBuf) -> Result<(), Inspect> {
         .parse_from_bytes(&decoded_message)
         .change_context(Inspect)?;
 
-    let tf = text_format::print_to_string_pretty(&*msg);
-    println!("{tf}");
-
-    // let mut tui = tui::init()?;
-    // let mut app = tui::App::new(file, 16);
-    // app.run(&mut tui)?;
-    // tui::restore()?;
+    let mut tui = tui::init().change_context(Inspect)?;
+    let mut app = tui::App::new(md, msg);
+    app.run(&mut tui).change_context(Inspect)?;
+    tui::restore().change_context(Inspect)?;
 
     Ok(())
 }
