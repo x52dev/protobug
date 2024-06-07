@@ -34,6 +34,7 @@ enum Commands {
         schema: Utf8PathBuf,
     },
 
+    /// Inspects a protobuf file (base64) using a schema.
     Inspect {
         #[arg(long)]
         schema: Utf8PathBuf,
@@ -89,11 +90,17 @@ fn inspect(schema: Utf8PathBuf, file: Utf8PathBuf) -> Result<(), Inspect> {
 
     let md = fd.message_by_package_relative_name(&msg_name).unwrap();
 
-    let file_contents = fs::read_to_string(file).change_context(Inspect)?;
-    let decoded_message = decode_any_base64(&file_contents);
+    let file_contents = fs::read_to_string(&file)
+        .attach_printable_lazy(|| format!("File: {file}"))
+        .change_context(Inspect)?;
+
+    let decoded_message = decode_any_base64(file_contents.trim_end())
+        .attach_printable_lazy(|| format!("File: {file}"))
+        .change_context(Inspect)?;
 
     let msg = md
         .parse_from_bytes(&decoded_message)
+        .attach_printable_lazy(|| format!("File: {file}"))
         .change_context(Inspect)?;
 
     let mut tui = tui::init().change_context(Inspect)?;
@@ -142,10 +149,10 @@ fn validate_schema(schema_path: Utf8PathBuf) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-fn decode_any_base64(encoded: &str) -> Vec<u8> {
-    None.or_else(|| BASE64_STANDARD.decode(encoded).ok())
-        .or_else(|| BASE64_STANDARD_NO_PAD.decode(encoded).ok())
-        .or_else(|| BASE64_URL_SAFE.decode(encoded).ok())
-        .or_else(|| BASE64_URL_SAFE_NO_PAD.decode(encoded).ok())
-        .unwrap()
+fn decode_any_base64(encoded: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    Ok(BASE64_STANDARD
+        .decode(encoded)
+        .or_else(|_| BASE64_STANDARD_NO_PAD.decode(encoded))
+        .or_else(|_| BASE64_URL_SAFE.decode(encoded))
+        .or_else(|_| BASE64_URL_SAFE_NO_PAD.decode(encoded))?)
 }
