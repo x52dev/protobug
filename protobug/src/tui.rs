@@ -145,19 +145,8 @@ impl App<'_> {
                     self.data = msg;
                 }
             }
-
-            _ => {}
         };
 
         Ok(())
     }
-
-    // fn handle_key_event(&mut self, ev: event::KeyEvent) {
-    //     match ev.code {
-    //         // exit (ctrl-c
-    //         KeyCode::Char('c') if ev.modifiers.contains(KeyModifiers::CONTROL) => self.exit,
-
-    //         _ => {}
-    //     }
-    // }
 }
