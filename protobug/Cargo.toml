@@ -10,7 +10,7 @@ anyhow = "1"
 base64 = "0.22"
 camino = "1"
 clap = { version = "4", features = ["derive"] }
-crossterm = "0.27"
+crossterm = "0.28"
 derive_more = "0.99.18"
 error-stack = { version = "0.5", features = ["anyhow"] }
 hex = "0.4"
