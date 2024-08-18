@@ -10,7 +10,7 @@ anyhow = "1"
 base64 = "0.22"
 camino = "1"
 clap = { version = "4", features = ["derive"] }
-crossterm = "0.27"
+crossterm = "0.28"
 derive_more = { version = "1", features = ["display", "error"] }
 error-stack = { version = "0.5", features = ["anyhow"] }
 hex = "0.4"
@@ -19,7 +19,7 @@ protobuf-json-mapping = "3"
 protobuf-parse = "3"
 ratatui = "0.28"
 serde_json = "1"
-tui-textarea = "0.5"
+tui-textarea = "0.6"
 
 [dev-dependencies]
 indoc = "2"
