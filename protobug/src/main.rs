@@ -7,7 +7,7 @@ use std::fs;
 use base64::prelude::*;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
-use derive_more::{Display, Error};
+use derive_more::derive::{Display, Error};
 use error::Inspect;
 use error_stack::{IntoReportCompat as _, Result, ResultExt as _};
 use protobuf::{reflect::FileDescriptor, text_format};
@@ -45,7 +45,7 @@ enum Commands {
 }
 
 #[derive(Debug, Display, Error)]
-#[display(fmt = "Exit")]
+#[display("Exit")]
 pub(crate) struct ProtobugError;
 
 fn main() -> Result<(), ProtobugError> {
