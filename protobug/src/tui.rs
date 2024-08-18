@@ -78,7 +78,7 @@ impl App<'_> {
     fn render_frame(&mut self, frame: &mut Frame<'_>) {
         let layout = Layout::horizontal(Constraint::from_fills([1, 1]));
         let left_layout = Layout::vertical(Constraint::from_fills([1, 1, 1]));
-        let [left_area, right_area] = layout.areas(frame.size());
+        let [left_area, right_area] = layout.areas(frame.area());
         let [top_left_area, middle_left_area, bottom_left_area] = left_layout.areas(left_area);
 
         let tf_repr = text_format::print_to_string_pretty(&*self.data);
