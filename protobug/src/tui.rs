@@ -119,7 +119,7 @@ impl App<'_> {
         frame.render_widget(para_hex, middle_left_area);
         frame.render_widget(para_ascii, bottom_left_area);
 
-        frame.render_widget(self.json_editor.widget(), right_block.inner(right_area));
+        frame.render_widget(&self.json_editor, right_block.inner(right_area));
         frame.render_widget(right_block, right_area);
     }
 

@@ -1,21 +1,21 @@
-use derive_more::{Display, Error};
+use derive_more::derive::{Display, Error};
 
 #[derive(Debug, Display, Error)]
-#[display(fmt = "Schema validation failed")]
+#[display("Schema validation failed")]
 pub(crate) struct Validate;
 
 #[derive(Debug, Display, Error)]
-#[display(fmt = "Inspecting message failed")]
+#[display("Inspecting message failed")]
 pub(crate) struct Inspect;
 
 #[derive(Debug, Display, Error)]
-#[display(fmt = "Invalid Protobuf schema")]
+#[display("Invalid Protobuf schema")]
 pub(crate) struct InvalidSchema;
 
 #[derive(Debug, Display, Error)]
-#[display(fmt = "No top-level messages found")]
+#[display("No top-level messages found")]
 pub(crate) struct NoTopLevelMessages;
 
 #[derive(Debug, Display, Error)]
-#[display(fmt = "Schemas with multiple top-level messages are not currently supported")]
+#[display("Schemas with multiple top-level messages are not currently supported")]
 pub(crate) struct MultipleTopLevelMessages;
