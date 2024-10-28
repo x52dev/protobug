@@ -19,7 +19,7 @@ protobuf-json-mapping = "3"
 protobuf-parse = "3"
 ratatui = "0.28"
 serde_json = "1"
-tui-textarea = "0.6"
+tui-textarea = "0.7"
 
 [dev-dependencies]
 indoc = "2"
