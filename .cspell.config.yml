@@ -1,8 +1,10 @@
 words:
   - codegen
   - crossterm
+  - indoc
   - protobuf
   - protobug
   - protogen
   - ratatui
+  - serde
   - typecheck

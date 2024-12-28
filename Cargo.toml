@@ -10,13 +10,13 @@ rust-version = "1.75"
 [workspace.dependencies]
 base64 = "0.22"
 camino = "1"
-clap = { version = "4", features = ["derive"] }
-crossterm = "0.27"
+clap = { version = "4" }
+crossterm = "0.28"
 error-stack = "0.5"
 hex = "0.4"
 protobuf = "3"
 protobuf-codegen = "3"
-ratatui = "0.28"
+ratatui = "0.29"
 
 [workspace.lints.rust]
 future_incompatible = "deny"
