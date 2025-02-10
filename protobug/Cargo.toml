@@ -11,7 +11,7 @@ base64 = { workspace = true }
 camino = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 crossterm = { workspace = true }
-derive_more = { version = "1", features = ["display", "error"] }
+derive_more = { version = "2", features = ["display", "error"] }
 error-stack = { workspace = true, features = ["anyhow"] }
 hex = { workspace = true }
 protobuf = { workspace = true }
