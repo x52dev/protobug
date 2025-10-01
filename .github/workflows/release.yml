@@ -22,7 +22,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1.14.1
 
       - name: release-plz
-        uses: MarcoIeni/release-plz-action@v0.5.112
+        uses: MarcoIeni/release-plz-action@v0.5.117
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
