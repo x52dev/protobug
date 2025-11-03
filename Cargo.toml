@@ -11,7 +11,7 @@ rust-version = "1.75"
 base64 = "0.22"
 camino = "1"
 clap = { version = "4" }
-crossterm = "0.28"
+crossterm = "0.29"
 error-stack = "0.5"
 hex = "0.4"
 protobuf = "3"
