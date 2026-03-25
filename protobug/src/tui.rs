@@ -77,7 +77,8 @@ impl App<'_> {
     ) -> std::result::Result<Self, error_stack::Report<Inspect>> {
         let json = inspector.canonical_json()?;
 
-        let json_editor = TextArea::new(json.lines().map(ToOwned::to_owned).collect());
+        let mut json_editor = TextArea::new(json.lines().map(ToOwned::to_owned).collect());
+        json_editor.set_line_number_style(Style::default().fg(Color::DarkGray));
 
         Ok(Self {
             inspector,
@@ -673,6 +674,24 @@ mod tests {
         let rendered = snapshot_text(&mut app);
 
         assert_snapshot!(rendered);
+    }
+
+    #[test]
+    fn json_panel_shows_line_numbers() {
+        let inspector = load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            &sample_bytes(),
+            InputFormat::Binary,
+        )
+        .unwrap();
+        let mut app =
+            App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
+
+        let rendered = render_text(&mut app);
+
+        assert!(rendered.contains("1 {"));
+        assert!(rendered.contains("4     \"x\": 42,"));
     }
 
     #[test]
