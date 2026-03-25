@@ -13,7 +13,7 @@ use tui_textarea::TextArea;
 
 use crate::{
     error::Inspect,
-    inspector::{DisplayOptions, Inspector, SaveTargets},
+    inspector::{DisplayOptions, EnumSelection, Inspector, SaveTargets},
     selection::{self, FieldPath},
 };
 
@@ -113,9 +113,16 @@ impl App<'_> {
 
         let json = self.current_json();
         let selected_path = self.current_selected_path(&json);
+        let enum_selection = selected_path
+            .as_ref()
+            .and_then(|path| self.inspector.enum_selection(path));
         let omitted_default_enum_hint = selected_path
             .as_ref()
             .and_then(|path| self.inspector.omitted_default_enum_hint(path));
+        let inline_hints = self.inline_hints(
+            enum_selection.as_ref(),
+            omitted_default_enum_hint.as_deref(),
+        );
         let highlighted_bytes = selected_path
             .as_ref()
             .and_then(|path| self.inspector.highlighted_byte_indices(path).ok())
@@ -151,11 +158,17 @@ impl App<'_> {
         frame.render_widget(para_hex, middle_left_area);
         frame.render_widget(para_ascii, bottom_left_area);
 
-        if let Some(hint) = omitted_default_enum_hint {
-            let [editor_area, hint_area] =
-                Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(right_inner);
+        if !inline_hints.is_empty() {
+            let [editor_area, hint_area] = Layout::vertical([
+                Constraint::Min(0),
+                Constraint::Length(inline_hints.len() as u16),
+            ])
+            .areas(right_inner);
             frame.render_widget(&self.json_editor, editor_area);
-            frame.render_widget(Paragraph::new(hint).style(enum_hint_style()), hint_area);
+            frame.render_widget(
+                Paragraph::new(inline_hints.join("\n")).style(enum_hint_style()),
+                hint_area,
+            );
         } else {
             frame.render_widget(&self.json_editor, right_inner);
         }
@@ -194,6 +207,28 @@ impl App<'_> {
                 && ev.modifiers.contains(KeyModifiers::CONTROL) =>
             {
                 self.save_outputs();
+            }
+
+            event::Event::Key(
+                ev @ KeyEvent {
+                    code: KeyCode::Char('n'),
+                    ..
+                },
+            ) if ev.kind == event::KeyEventKind::Press
+                && ev.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.cycle_selected_enum(1);
+            }
+
+            event::Event::Key(
+                ev @ KeyEvent {
+                    code: KeyCode::Char('p'),
+                    ..
+                },
+            ) if ev.kind == event::KeyEventKind::Press
+                && ev.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.cycle_selected_enum(-1);
             }
 
             event::Event::Key(
@@ -365,6 +400,74 @@ impl App<'_> {
         self.display_options
             .columns
             .unwrap_or_else(|| auto_columns_for_pane_width(pane_width))
+    }
+
+    fn inline_hints(
+        &self,
+        enum_selection: Option<&EnumSelection>,
+        omitted_default_enum_hint: Option<&str>,
+    ) -> Vec<String> {
+        let mut hints = Vec::new();
+
+        if let Some(enum_selection) = enum_selection {
+            let variants = enum_selection
+                .variants
+                .iter()
+                .enumerate()
+                .map(|(index, variant)| {
+                    if index == enum_selection.current {
+                        format!("[{variant}]")
+                    } else {
+                        variant.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            hints.push(format!("Ctrl-P/Ctrl-N enum: {variants}"));
+        }
+
+        if let Some(omitted_default_enum_hint) = omitted_default_enum_hint {
+            hints.push(omitted_default_enum_hint.to_owned());
+        }
+
+        hints
+    }
+
+    fn cycle_selected_enum(&mut self, delta: isize) {
+        let json = self.current_json();
+        let Some(selected_path) = self.current_selected_path(&json) else {
+            self.last_status = Some(Status {
+                kind: StatusKind::Info,
+                message: "Move the cursor onto an enum value to switch variants".to_owned(),
+            });
+            return;
+        };
+
+        let Some(variant) = self.inspector.cycle_enum_variant(&selected_path, delta) else {
+            self.last_status = Some(Status {
+                kind: StatusKind::Info,
+                message: "Move the cursor onto an enum value to switch variants".to_owned(),
+            });
+            return;
+        };
+
+        match self.inspector.canonical_json() {
+            Ok(json) => {
+                let cursor = self.json_editor.cursor();
+                self.json_editor
+                    .set_lines(json.lines().map(ToOwned::to_owned).collect(), cursor);
+                self.last_status = Some(Status {
+                    kind: StatusKind::Info,
+                    message: format!("Enum set to {variant}"),
+                });
+            }
+            Err(error) => {
+                self.last_status = Some(Status {
+                    kind: StatusKind::Error,
+                    message: error.to_string(),
+                });
+            }
+        }
     }
 }
 
@@ -654,7 +757,30 @@ mod tests {
 
         let rendered = render_text(&mut app);
 
+        assert!(rendered.contains("Ctrl-P/Ctrl-N enum: [Left] Right Middle"));
         assert!(rendered.contains("Default enum Left is omitted on the wire"));
+    }
+
+    #[test]
+    fn cycling_selected_enum_updates_json_and_status() {
+        let inspector = load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            &sample_bytes(),
+            InputFormat::Binary,
+        )
+        .unwrap();
+        let mut app =
+            App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
+
+        move_cursor_to(&mut app, "\"button\"");
+        app.cycle_selected_enum(1);
+
+        assert!(app.current_json().contains(r#""button": "Right""#));
+        assert_eq!(app.status_line(), "Enum set to Right");
+
+        let rendered = render_text(&mut app);
+        assert!(rendered.contains("Ctrl-P/Ctrl-N enum: Left [Right] Middle"));
     }
 
     #[test]

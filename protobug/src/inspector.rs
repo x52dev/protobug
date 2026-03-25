@@ -11,8 +11,8 @@ use protobuf::{
     MessageDyn,
     descriptor::FileDescriptorProto,
     reflect::{
-        FileDescriptor, MessageDescriptor, ReflectFieldRef, ReflectValueRef, RuntimeFieldType,
-        RuntimeType,
+        FileDescriptor, MessageDescriptor, ReflectFieldRef, ReflectValueBox, ReflectValueRef,
+        RuntimeFieldType, RuntimeType,
     },
     text_format,
 };
@@ -70,6 +70,12 @@ pub struct InspectOptions {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DisplayOptions {
     pub columns: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EnumSelection {
+    pub(crate) variants: Vec<String>,
+    pub(crate) current: usize,
 }
 
 pub struct Inspector {
@@ -170,6 +176,23 @@ impl Inspector {
         selected_path: &[selection::FieldPathSegment],
     ) -> Option<String> {
         omitted_default_enum_hint(&*self.data, &self.md, selected_path)
+    }
+
+    pub(crate) fn enum_selection(
+        &self,
+        selected_path: &[selection::FieldPathSegment],
+    ) -> Option<EnumSelection> {
+        enum_selection(&*self.data, &self.md, selected_path)
+    }
+
+    pub(crate) fn cycle_enum_variant(
+        &mut self,
+        selected_path: &[selection::FieldPathSegment],
+        delta: isize,
+    ) -> Option<String> {
+        let next_variant = cycle_enum_variant(&mut *self.data, &self.md, selected_path, delta)?;
+        self.parse_error = None;
+        Some(next_variant)
     }
 
     pub fn hex_view(&self) -> String {
@@ -606,6 +629,170 @@ fn omitted_default_enum_hint(
     }
 }
 
+fn enum_selection(
+    message: &dyn MessageDyn,
+    descriptor: &MessageDescriptor,
+    path: &[selection::FieldPathSegment],
+) -> Option<EnumSelection> {
+    let (selection::FieldPathSegment::Field(field_name), rest) = path.split_first()? else {
+        return None;
+    };
+
+    let field = descriptor.field_by_name(field_name)?;
+
+    match (field.runtime_field_type(), rest) {
+        (RuntimeFieldType::Singular(RuntimeType::Enum(enum_descriptor)), []) => {
+            let ReflectValueRef::Enum(_, current_number) =
+                field.get_singular_field_or_default(message)
+            else {
+                return None;
+            };
+            enum_selection_for_number(&enum_descriptor, current_number)
+        }
+        (
+            RuntimeFieldType::Repeated(RuntimeType::Enum(enum_descriptor)),
+            [selection::FieldPathSegment::Index(index)],
+        ) => {
+            let repeated = field.get_repeated(message);
+            let ReflectValueRef::Enum(_, current_number) = repeated.get(*index) else {
+                return None;
+            };
+            enum_selection_for_number(&enum_descriptor, current_number)
+        }
+        (_, _) => match field.get_reflect(message) {
+            ReflectFieldRef::Optional(optional) => {
+                let ReflectValueRef::Message(nested) = optional.value()? else {
+                    return None;
+                };
+                enum_selection(&*nested, &nested.descriptor_dyn(), rest)
+            }
+            ReflectFieldRef::Repeated(repeated) => {
+                let (selection::FieldPathSegment::Index(index), nested_path) =
+                    rest.split_first()?
+                else {
+                    return None;
+                };
+                let ReflectValueRef::Message(nested) = repeated.get(*index) else {
+                    return None;
+                };
+                enum_selection(&*nested, &nested.descriptor_dyn(), nested_path)
+            }
+            ReflectFieldRef::Map(_) => None,
+        },
+    }
+}
+
+fn enum_selection_for_number(
+    enum_descriptor: &protobuf::reflect::EnumDescriptor,
+    current_number: i32,
+) -> Option<EnumSelection> {
+    let variants = enum_descriptor.values().collect::<Vec<_>>();
+    let current = variants
+        .iter()
+        .position(|variant| variant.value() == current_number)
+        .unwrap_or_default();
+
+    Some(EnumSelection {
+        variants: variants
+            .into_iter()
+            .map(|variant| variant.name().to_owned())
+            .collect(),
+        current,
+    })
+}
+
+fn cycle_enum_variant(
+    message: &mut dyn MessageDyn,
+    descriptor: &MessageDescriptor,
+    path: &[selection::FieldPathSegment],
+    delta: isize,
+) -> Option<String> {
+    let (selection::FieldPathSegment::Field(field_name), rest) = path.split_first()? else {
+        return None;
+    };
+
+    let field = descriptor.field_by_name(field_name)?;
+
+    match (field.runtime_field_type(), rest) {
+        (RuntimeFieldType::Singular(RuntimeType::Enum(enum_descriptor)), []) => {
+            let ReflectValueRef::Enum(_, current_number) =
+                field.get_singular_field_or_default(message)
+            else {
+                return None;
+            };
+            let next_variant = cycle_enum_descriptor(&enum_descriptor, current_number, delta)?;
+            field.set_singular_field(message, ReflectValueBox::from(next_variant.clone()));
+            Some(next_variant.name().to_owned())
+        }
+        (
+            RuntimeFieldType::Repeated(RuntimeType::Enum(enum_descriptor)),
+            [selection::FieldPathSegment::Index(index)],
+        ) => {
+            let repeated = field.mut_repeated(message);
+            let ReflectValueRef::Enum(_, current_number) = repeated.get(*index) else {
+                return None;
+            };
+            let next_variant = cycle_enum_descriptor(&enum_descriptor, current_number, delta)?;
+            let mut repeated = field.mut_repeated(message);
+            repeated.set(*index, ReflectValueBox::from(next_variant.clone()));
+            Some(next_variant.name().to_owned())
+        }
+        (_, _) => match field.runtime_field_type() {
+            RuntimeFieldType::Singular(RuntimeType::Message(message_descriptor)) => {
+                let nested = field.mut_message(message);
+                cycle_enum_variant(nested, &message_descriptor, rest, delta)
+            }
+            RuntimeFieldType::Repeated(RuntimeType::Message(message_descriptor)) => {
+                let (selection::FieldPathSegment::Index(index), nested_path) =
+                    rest.split_first()?
+                else {
+                    return None;
+                };
+
+                let mut repeated = field.mut_repeated(message);
+                let mut nested = repeated.get(*index).to_box();
+                let ReflectValueBox::Message(nested_message) = &mut nested else {
+                    return None;
+                };
+                let next_variant = cycle_enum_variant(
+                    &mut **nested_message,
+                    &message_descriptor,
+                    nested_path,
+                    delta,
+                )?;
+                repeated.set(*index, nested);
+                Some(next_variant)
+            }
+            _ => None,
+        },
+    }
+}
+
+fn cycle_enum_descriptor(
+    enum_descriptor: &protobuf::reflect::EnumDescriptor,
+    current_number: i32,
+    delta: isize,
+) -> Option<protobuf::reflect::EnumValueDescriptor> {
+    let variants = enum_descriptor.values().collect::<Vec<_>>();
+    let current = variants
+        .iter()
+        .position(|variant| variant.value() == current_number)
+        .unwrap_or_default();
+    let next = wrap_index(current, variants.len(), delta)?;
+    Some(variants[next].clone())
+}
+
+fn wrap_index(current: usize, len: usize, delta: isize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+
+    let current = current as isize;
+    let len = len as isize;
+
+    Some((current + delta).rem_euclid(len) as usize)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -789,6 +976,45 @@ mod tests {
         assert_eq!(
             hint.as_deref(),
             Some("Default enum Left is omitted on the wire"),
+        );
+    }
+
+    #[test]
+    fn inspector_lists_and_cycles_enum_variants() {
+        let mut inspector = load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            &sample_bytes(),
+            InputFormat::Binary,
+        )
+        .unwrap();
+
+        assert_eq!(
+            inspector.enum_selection(&[
+                selection::FieldPathSegment::Field("click".to_owned()),
+                selection::FieldPathSegment::Field("button".to_owned()),
+            ]),
+            Some(EnumSelection {
+                variants: vec!["Left".to_owned(), "Right".to_owned(), "Middle".to_owned()],
+                current: 0,
+            }),
+        );
+
+        assert_eq!(
+            inspector.cycle_enum_variant(
+                &[
+                    selection::FieldPathSegment::Field("click".to_owned()),
+                    selection::FieldPathSegment::Field("button".to_owned()),
+                ],
+                1,
+            ),
+            Some("Right".to_owned()),
+        );
+        assert!(
+            inspector
+                .canonical_json()
+                .unwrap()
+                .contains(r#""button": "Right""#)
         );
     }
 
