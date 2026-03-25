@@ -9,7 +9,7 @@ use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use derive_more::derive::{Display, Error};
 use error::Inspect;
-use error_stack::{IntoReportCompat as _, Result, ResultExt as _};
+use error_stack::{IntoReportCompat as _, Report, ResultExt as _};
 use protobuf::{reflect::FileDescriptor, text_format};
 
 mod error;
@@ -48,7 +48,7 @@ enum Commands {
 #[display("Exit")]
 pub(crate) struct ProtobugError;
 
-fn main() -> Result<(), ProtobugError> {
+fn main() -> std::result::Result<(), Report<ProtobugError>> {
     let args = Args::parse();
 
     match args.command {
@@ -66,7 +66,7 @@ fn main() -> Result<(), ProtobugError> {
     Ok(())
 }
 
-fn inspect(schema: Utf8PathBuf, file: Utf8PathBuf) -> Result<(), Inspect> {
+fn inspect(schema: Utf8PathBuf, file: Utf8PathBuf) -> std::result::Result<(), Report<Inspect>> {
     let mut file_descriptor_protos = protobuf_parse::Parser::new()
         .pure()
         .includes(schema.parent().as_slice())
@@ -83,7 +83,7 @@ fn inspect(schema: Utf8PathBuf, file: Utf8PathBuf) -> Result<(), Inspect> {
     let fd = FileDescriptor::new_dynamic(fd_proto, &deps).change_context(Inspect)?;
 
     let msg_name = single_msg_name(&fd)
-        .attach_printable(format!("Schema file: {schema}"))
+        .attach(format!("Schema file: {schema}"))
         .change_context(Inspect)?;
 
     // TODO: provide choice when there are multiple top-level types
@@ -91,16 +91,16 @@ fn inspect(schema: Utf8PathBuf, file: Utf8PathBuf) -> Result<(), Inspect> {
     let md = fd.message_by_package_relative_name(&msg_name).unwrap();
 
     let file_contents = fs::read_to_string(&file)
-        .attach_printable_lazy(|| format!("File: {file}"))
+        .attach_with(|| format!("File: {file}"))
         .change_context(Inspect)?;
 
     let decoded_message = decode_any_base64(file_contents.trim_end())
-        .attach_printable_lazy(|| format!("File: {file}"))
+        .attach_with(|| format!("File: {file}"))
         .change_context(Inspect)?;
 
     let msg = md
         .parse_from_bytes(&decoded_message)
-        .attach_printable_lazy(|| format!("File: {file}"))
+        .attach_with(|| format!("File: {file}"))
         .change_context(Inspect)?;
 
     let mut tui = tui::init().change_context(Inspect)?;
@@ -116,7 +116,7 @@ fn inspect(schema: Utf8PathBuf, file: Utf8PathBuf) -> Result<(), Inspect> {
 /// # Errors
 ///
 /// Returns error if there are more or less than 1 top-level message.
-fn single_msg_name(fd: &FileDescriptor) -> Result<String, InvalidSchema> {
+fn single_msg_name(fd: &FileDescriptor) -> std::result::Result<String, Report<InvalidSchema>> {
     let mut messages = fd.messages();
 
     let md = messages
@@ -130,12 +130,12 @@ fn single_msg_name(fd: &FileDescriptor) -> Result<String, InvalidSchema> {
         Ok(md.name().to_owned())
     } else {
         Err(MultipleTopLevelMessages)
-            .attach_printable(format!("Top-level messages found: {}", more + 1))
+            .attach(format!("Top-level messages found: {}", more + 1))
             .change_context(InvalidSchema)
     }
 }
 
-fn validate_schema(schema_path: Utf8PathBuf) -> Result<(), anyhow::Error> {
+fn validate_schema(schema_path: Utf8PathBuf) -> std::result::Result<(), Report<anyhow::Error>> {
     let fds = protobuf_parse::Parser::new()
         .pure()
         .includes(schema_path.parent().as_slice())
@@ -149,10 +149,11 @@ fn validate_schema(schema_path: Utf8PathBuf) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-fn decode_any_base64(encoded: &str) -> Result<Vec<u8>, base64::DecodeError> {
+fn decode_any_base64(encoded: &str) -> std::result::Result<Vec<u8>, Report<base64::DecodeError>> {
     Ok(BASE64_STANDARD
         .decode(encoded)
         .or_else(|_| BASE64_STANDARD_NO_PAD.decode(encoded))
         .or_else(|_| BASE64_URL_SAFE.decode(encoded))
-        .or_else(|_| BASE64_URL_SAFE_NO_PAD.decode(encoded))?)
+        .or_else(|_| BASE64_URL_SAFE_NO_PAD.decode(encoded))
+        .map_err(Report::new)?)
 }
