@@ -6,9 +6,9 @@ use crossterm::{
 };
 use protobuf::{reflect::MessageDescriptor, text_format};
 use ratatui::{
+    Terminal,
     prelude::*,
     widgets::{Block, BorderType, Borders, Paragraph},
-    Terminal,
 };
 use tui_textarea::TextArea;
 

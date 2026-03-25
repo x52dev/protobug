@@ -2,12 +2,12 @@ use std::fs;
 
 use base64::prelude::*;
 use protobuf::{
-    well_known_types::timestamp::Timestamp, EnumOrUnknown, Message as _, MessageField,
-    SpecialFields,
+    EnumOrUnknown, Message as _, MessageField, SpecialFields,
+    well_known_types::timestamp::Timestamp,
 };
 use protogen::system_event::{
-    system_event::{Event as SystemEventVariant, MouseButton, MouseDown},
     SystemEvent,
+    system_event::{Event as SystemEventVariant, MouseButton, MouseDown},
 };
 
 fn main() {
