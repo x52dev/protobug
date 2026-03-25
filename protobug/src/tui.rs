@@ -1,4 +1,7 @@
-use std::io;
+use std::{
+    io,
+    time::{Duration, Instant},
+};
 
 use crossterm::{
     event::{self, KeyCode, KeyEvent, KeyModifiers},
@@ -60,12 +63,43 @@ pub(crate) struct App<'a> {
 struct Status {
     kind: StatusKind,
     message: String,
+    expires_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum StatusKind {
     Info,
     Error,
+}
+
+const TRANSIENT_STATUS_DURATION: Duration = Duration::from_secs(2);
+
+impl Status {
+    fn persistent(kind: StatusKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            expires_at: None,
+        }
+    }
+
+    fn transient(kind: StatusKind, message: impl Into<String>, duration: Duration) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            expires_at: Some(Instant::now() + duration),
+        }
+    }
+
+    fn is_expired(&self) -> bool {
+        self.expires_at
+            .is_some_and(|expires_at| Instant::now() >= expires_at)
+    }
+
+    fn timeout_remaining(&self) -> Option<Duration> {
+        self.expires_at
+            .map(|expires_at| expires_at.saturating_duration_since(Instant::now()))
+    }
 }
 
 impl App<'_> {
@@ -194,6 +228,15 @@ impl App<'_> {
     }
 
     fn handle_events(&mut self) -> io::Result<()> {
+        self.clear_expired_status();
+
+        if let Some(timeout) = self.status_timeout()
+            && !event::poll(timeout)?
+        {
+            self.clear_expired_status();
+            return Ok(());
+        }
+
         match event::read()? {
             // check that the event is a key press event as crossterm also emits
             // key release and repeat events on Windows
@@ -263,12 +306,12 @@ impl App<'_> {
                 if self.json_editor.input(input) {
                     let json = self.json_editor.lines().join("\n");
                     if let Err(error) = self.inspector.apply_json(&json) {
-                        self.last_status = Some(Status {
-                            kind: StatusKind::Error,
-                            message: format!("Parse error: {error}"),
-                        });
+                        self.last_status = Some(Status::persistent(
+                            StatusKind::Error,
+                            format!("Parse error: {error}"),
+                        ));
                     } else if matches!(
-                        self.last_status.as_ref().map(|status| status.kind),
+                        self.visible_status().map(|status| status.kind),
                         Some(StatusKind::Error)
                     ) {
                         self.last_status = None;
@@ -289,16 +332,13 @@ impl App<'_> {
                     .collect::<Vec<_>>()
                     .join(", ");
 
-                self.last_status = Some(Status {
-                    kind: StatusKind::Info,
-                    message: format!("Saved outputs: {message}"),
-                });
+                self.last_status = Some(Status::persistent(
+                    StatusKind::Info,
+                    format!("Saved outputs: {message}"),
+                ));
             }
             Err(error) => {
-                self.last_status = Some(Status {
-                    kind: StatusKind::Error,
-                    message: error.to_string(),
-                });
+                self.last_status = Some(Status::persistent(StatusKind::Error, error.to_string()));
             }
         }
     }
@@ -311,7 +351,7 @@ impl App<'_> {
     }
 
     fn status_line_for_columns(&self, columns: usize) -> String {
-        if let Some(status) = &self.last_status {
+        if let Some(status) = self.visible_status() {
             return status.message.clone();
         }
 
@@ -319,11 +359,27 @@ impl App<'_> {
     }
 
     fn status_style(&self) -> Style {
-        match self.last_status.as_ref().map(|status| status.kind) {
+        match self.visible_status().map(|status| status.kind) {
             Some(StatusKind::Info) => Style::default().fg(Color::Green),
             Some(StatusKind::Error) => Style::default().fg(Color::Red),
             None => Style::default().fg(Color::DarkGray),
         }
+    }
+
+    fn visible_status(&self) -> Option<&Status> {
+        self.last_status
+            .as_ref()
+            .filter(|status| !status.is_expired())
+    }
+
+    fn clear_expired_status(&mut self) {
+        if self.last_status.as_ref().is_some_and(Status::is_expired) {
+            self.last_status = None;
+        }
+    }
+
+    fn status_timeout(&self) -> Option<Duration> {
+        self.visible_status().and_then(Status::timeout_remaining)
     }
 
     fn current_json(&self) -> String {
@@ -409,13 +465,14 @@ impl App<'_> {
     fn adjust_columns(&mut self, delta: isize) {
         let current_columns = self.effective_columns_for_pane_width(self.last_byte_pane_width);
         self.display_options.columns = Some(adjust_width(current_columns, delta));
-        self.last_status = Some(Status {
-            kind: StatusKind::Info,
-            message: format!(
+        self.last_status = Some(Status::transient(
+            StatusKind::Info,
+            format!(
                 "Display columns set to {}",
                 self.display_options.columns.unwrap_or(current_columns),
             ),
-        });
+            TRANSIENT_STATUS_DURATION,
+        ));
     }
 
     fn effective_columns_for_pane_width(&self, pane_width: u16) -> usize {
@@ -471,18 +528,18 @@ impl App<'_> {
     fn cycle_selected_enum(&mut self, delta: isize) {
         let json = self.current_json();
         let Some(selected_path) = self.current_selected_path(&json) else {
-            self.last_status = Some(Status {
-                kind: StatusKind::Info,
-                message: "Move the cursor onto an enum value to switch variants".to_owned(),
-            });
+            self.last_status = Some(Status::persistent(
+                StatusKind::Info,
+                "Move the cursor onto an enum value to switch variants",
+            ));
             return;
         };
 
         let Some(variant) = self.inspector.cycle_enum_variant(&selected_path, delta) else {
-            self.last_status = Some(Status {
-                kind: StatusKind::Info,
-                message: "Move the cursor onto an enum value to switch variants".to_owned(),
-            });
+            self.last_status = Some(Status::persistent(
+                StatusKind::Info,
+                "Move the cursor onto an enum value to switch variants",
+            ));
             return;
         };
 
@@ -491,16 +548,13 @@ impl App<'_> {
                 let cursor = self.json_editor.cursor();
                 self.json_editor
                     .set_lines(json.lines().map(ToOwned::to_owned).collect(), cursor);
-                self.last_status = Some(Status {
-                    kind: StatusKind::Info,
-                    message: format!("Enum set to {variant}"),
-                });
+                self.last_status = Some(Status::persistent(
+                    StatusKind::Info,
+                    format!("Enum set to {variant}"),
+                ));
             }
             Err(error) => {
-                self.last_status = Some(Status {
-                    kind: StatusKind::Error,
-                    message: error.to_string(),
-                });
+                self.last_status = Some(Status::persistent(StatusKind::Error, error.to_string()));
             }
         }
     }
@@ -705,10 +759,10 @@ mod tests {
         .unwrap();
         let mut app =
             App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
-        app.last_status = Some(Status {
-            kind: StatusKind::Error,
-            message: "Parse error: expected value".to_owned(),
-        });
+        app.last_status = Some(Status::persistent(
+            StatusKind::Error,
+            "Parse error: expected value",
+        ));
 
         let rendered = snapshot_text(&mut app);
 
@@ -914,6 +968,33 @@ mod tests {
         app.adjust_columns(4);
         assert_eq!(app.display_options.columns, Some(12));
         assert_eq!(app.status_line(), "Display columns set to 12");
+    }
+
+    #[test]
+    fn expired_column_status_returns_to_footer_help() {
+        let inspector = load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            &sample_bytes(),
+            InputFormat::Binary,
+        )
+        .unwrap();
+        let mut app =
+            App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
+        app.last_byte_pane_width = 48;
+
+        app.adjust_columns(-8);
+        assert_eq!(app.status_line(), "Display columns set to 8");
+
+        app.last_status.as_mut().unwrap().expires_at = Some(Instant::now());
+
+        assert_eq!(
+            app.status_line(),
+            "Ctrl-C quit | Ctrl-S save | [ ] columns 8"
+        );
+
+        app.clear_expired_status();
+        assert!(app.last_status.is_none());
     }
 
     #[test]
