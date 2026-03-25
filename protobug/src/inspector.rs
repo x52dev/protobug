@@ -10,7 +10,10 @@ use error_stack::{IntoReportCompat as _, Report, ResultExt as _};
 use protobuf::{
     MessageDyn,
     descriptor::FileDescriptorProto,
-    reflect::{FileDescriptor, MessageDescriptor},
+    reflect::{
+        FileDescriptor, MessageDescriptor, ReflectFieldRef, ReflectValueRef, RuntimeFieldType,
+        RuntimeType,
+    },
     text_format,
 };
 
@@ -154,6 +157,13 @@ impl Inspector {
         }
 
         Ok(highlighted)
+    }
+
+    pub(crate) fn omitted_default_enum_hint(
+        &self,
+        selected_path: &[selection::FieldPathSegment],
+    ) -> Option<String> {
+        omitted_default_enum_hint(&*self.data, &self.md, selected_path)
     }
 
     pub fn hex_view(&self) -> String {
@@ -518,6 +528,77 @@ fn looks_like_base64(text: &str) -> bool {
         })
 }
 
+fn omitted_default_enum_hint(
+    message: &dyn MessageDyn,
+    descriptor: &MessageDescriptor,
+    path: &[selection::FieldPathSegment],
+) -> Option<String> {
+    let (selection::FieldPathSegment::Field(field_name), rest) = path.split_first()? else {
+        return None;
+    };
+
+    let field = descriptor.field_by_name(field_name)?;
+
+    if rest.is_empty() {
+        let RuntimeFieldType::Singular(RuntimeType::Enum(enum_descriptor)) =
+            field.runtime_field_type()
+        else {
+            return None;
+        };
+
+        if field.has_field(message) {
+            return None;
+        }
+
+        let ReflectValueRef::Enum(_, value_number) = field.get_singular_field_or_default(message)
+        else {
+            return None;
+        };
+        let ReflectValueRef::Enum(_, default_number) = field.singular_default_value() else {
+            return None;
+        };
+
+        if value_number != default_number {
+            return None;
+        }
+
+        let variant = enum_descriptor.value_by_number(value_number)?;
+
+        return Some(format!(
+            "Default enum {} is omitted on the wire",
+            variant.name(),
+        ));
+    }
+
+    match field.get_reflect(message) {
+        ReflectFieldRef::Optional(optional) => {
+            let ReflectValueRef::Message(nested) = optional.value()? else {
+                return None;
+            };
+
+            omitted_default_enum_hint(&*nested, &nested.descriptor_dyn(), rest)
+        }
+        ReflectFieldRef::Repeated(repeated) => {
+            let (selection::FieldPathSegment::Index(index), nested_path) = rest.split_first()?
+            else {
+                return None;
+            };
+            let nested = repeated.get(*index);
+
+            if nested_path.is_empty() {
+                return None;
+            }
+
+            let ReflectValueRef::Message(nested) = nested else {
+                return None;
+            };
+
+            omitted_default_enum_hint(&*nested, &nested.descriptor_dyn(), nested_path)
+        }
+        ReflectFieldRef::Map(_) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -680,6 +761,46 @@ mod tests {
             fs::read_to_string(targets.json.as_ref().unwrap())
                 .unwrap()
                 .contains("\"user clicked\"")
+        );
+    }
+
+    #[test]
+    fn inspector_reports_omitted_default_enum_hint() {
+        let inspector = load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            &sample_bytes(),
+            InputFormat::Binary,
+        )
+        .unwrap();
+
+        let hint = inspector.omitted_default_enum_hint(&[
+            selection::FieldPathSegment::Field("click".to_owned()),
+            selection::FieldPathSegment::Field("button".to_owned()),
+        ]);
+
+        assert_eq!(
+            hint.as_deref(),
+            Some("Default enum Left is omitted on the wire"),
+        );
+    }
+
+    #[test]
+    fn inspector_skips_omitted_default_enum_hint_for_other_fields() {
+        let inspector = load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            &sample_bytes(),
+            InputFormat::Binary,
+        )
+        .unwrap();
+
+        assert_eq!(
+            inspector.omitted_default_enum_hint(&[
+                selection::FieldPathSegment::Field("click".to_owned()),
+                selection::FieldPathSegment::Field("x".to_owned()),
+            ]),
+            None,
         );
     }
 

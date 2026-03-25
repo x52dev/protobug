@@ -106,6 +106,9 @@ impl App<'_> {
 
         let json = self.current_json();
         let selected_path = self.current_selected_path(&json);
+        let omitted_default_enum_hint = selected_path
+            .as_ref()
+            .and_then(|path| self.inspector.omitted_default_enum_hint(path));
         let highlighted_bytes = selected_path
             .as_ref()
             .and_then(|path| self.inspector.highlighted_byte_indices(path).ok())
@@ -134,12 +137,20 @@ impl App<'_> {
             .title("JSON")
             .borders(Borders::ALL)
             .border_type(BorderType::Plain);
+        let right_inner = right_block.inner(right_area);
 
         frame.render_widget(para_tf, top_left_area);
         frame.render_widget(para_hex, middle_left_area);
         frame.render_widget(para_ascii, bottom_left_area);
 
-        frame.render_widget(&self.json_editor, right_block.inner(right_area));
+        if let Some(hint) = omitted_default_enum_hint {
+            let [editor_area, hint_area] =
+                Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(right_inner);
+            frame.render_widget(&self.json_editor, editor_area);
+            frame.render_widget(Paragraph::new(hint).style(enum_hint_style()), hint_area);
+        } else {
+            frame.render_widget(&self.json_editor, right_inner);
+        }
         frame.render_widget(right_block, right_area);
 
         let footer_block = Block::default().borders(Borders::TOP);
@@ -336,6 +347,12 @@ fn highlight_style() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+fn enum_hint_style() -> Style {
+    Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::ITALIC)
+}
+
 #[cfg(test)]
 mod tests {
     use camino::Utf8PathBuf;
@@ -523,6 +540,24 @@ mod tests {
         let highlighted_ascii = highlighted_span_contents(&ascii);
         assert_eq!(highlighted_ascii.len(), 4);
         assert!(highlighted_ascii.contains(&"K".to_owned()));
+    }
+
+    #[test]
+    fn render_shows_hint_for_omitted_default_enum_variant() {
+        let inspector = load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            &sample_bytes(),
+            InputFormat::Binary,
+        )
+        .unwrap();
+        let mut app = App::new(inspector, SaveTargets::default()).unwrap();
+
+        move_cursor_to(&mut app, "\"button\"");
+
+        let rendered = render_text(&mut app);
+
+        assert!(rendered.contains("Default enum Left is omitted on the wire"));
     }
 
     fn move_cursor_to(app: &mut App<'_>, needle: &str) {
