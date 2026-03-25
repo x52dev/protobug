@@ -1096,8 +1096,10 @@ dependencies = [
  "protobuf",
  "protobuf-json-mapping",
  "protobuf-parse",
+ "protogen",
  "ratatui",
  "serde_json",
+ "tempfile",
  "tui-textarea-2",
 ]
 

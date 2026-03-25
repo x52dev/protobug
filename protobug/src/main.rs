@@ -1,22 +1,10 @@
 //! Protobuf Debugging Suite.
 
-#![allow(dead_code)]
-
-use std::fs;
-
-use base64::prelude::*;
 use camino::Utf8PathBuf;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use derive_more::derive::{Display, Error};
-use error::Inspect;
-use error_stack::{IntoReportCompat as _, Report, ResultExt as _};
-use protobuf::{reflect::FileDescriptor, text_format};
-
-mod error;
-mod line_wrap;
-mod tui;
-
-use self::error::{InvalidSchema, MultipleTopLevelMessages, NoTopLevelMessages};
+use error_stack::{Report, ResultExt as _};
+use protobug::{InputFormat, InspectOptions, SaveTargets, run_inspect, validate_schema};
 
 #[derive(Debug, Parser)]
 #[clap(version, about, rename_all = "kebab-case")]
@@ -34,14 +22,58 @@ enum Commands {
         schema: Utf8PathBuf,
     },
 
-    /// Inspects a protobuf file (base64) using a schema.
+    /// Inspects a protobuf payload using a schema.
     Inspect {
         #[arg(long)]
         schema: Utf8PathBuf,
 
+        /// Message name relative to the package in the schema.
         #[arg(long)]
-        file: Utf8PathBuf,
+        message: Option<String>,
+
+        /// Input file path. Reads from stdin when omitted or set to "-".
+        #[arg(long)]
+        file: Option<Utf8PathBuf>,
+
+        /// How to decode the input payload before parsing.
+        #[arg(long, value_enum, default_value_t = InputFormatArg::Auto)]
+        input_format: InputFormatArg,
+
+        /// Save the current message as pretty JSON when Ctrl-S is pressed.
+        #[arg(long)]
+        save_json: Option<Utf8PathBuf>,
+
+        /// Save the current message as raw protobuf bytes when Ctrl-S is pressed.
+        #[arg(long)]
+        save_bin: Option<Utf8PathBuf>,
+
+        /// Save the current message as hex when Ctrl-S is pressed.
+        #[arg(long)]
+        save_hex: Option<Utf8PathBuf>,
+
+        /// Save the current message as base64 when Ctrl-S is pressed.
+        #[arg(long)]
+        save_base64: Option<Utf8PathBuf>,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum InputFormatArg {
+    Auto,
+    Base64,
+    Hex,
+    Binary,
+}
+
+impl From<InputFormatArg> for InputFormat {
+    fn from(value: InputFormatArg) -> Self {
+        match value {
+            InputFormatArg::Auto => Self::Auto,
+            InputFormatArg::Base64 => Self::Base64,
+            InputFormatArg::Hex => Self::Hex,
+            InputFormatArg::Binary => Self::Binary,
+        }
+    }
 }
 
 #[derive(Debug, Display, Error)]
@@ -55,105 +87,37 @@ fn main() -> std::result::Result<(), Report<ProtobugError>> {
         Commands::Validate {
             schema: schema_path,
         } => {
-            validate_schema(schema_path).map_err(|err| err.change_context(ProtobugError))?;
+            println!(
+                "{}",
+                validate_schema(schema_path).map_err(|err| err.change_context(ProtobugError))?,
+            );
         }
 
-        Commands::Inspect { schema, file } => {
-            inspect(schema, file).change_context(ProtobugError)?;
+        Commands::Inspect {
+            schema,
+            message,
+            file,
+            input_format,
+            save_json,
+            save_bin,
+            save_hex,
+            save_base64,
+        } => {
+            run_inspect(InspectOptions {
+                schema,
+                message,
+                file,
+                input_format: input_format.into(),
+                save_targets: SaveTargets {
+                    json: save_json,
+                    base64: save_base64,
+                    hex: save_hex,
+                    binary: save_bin,
+                },
+            })
+            .change_context(ProtobugError)?;
         }
     }
 
     Ok(())
-}
-
-fn inspect(schema: Utf8PathBuf, file: Utf8PathBuf) -> std::result::Result<(), Report<Inspect>> {
-    let mut file_descriptor_protos = protobuf_parse::Parser::new()
-        .pure()
-        .includes(schema.parent().as_slice())
-        .input(&schema)
-        .parse_and_typecheck()
-        .unwrap()
-        .file_descriptors;
-
-    let fd_proto = file_descriptor_protos.pop().unwrap();
-    let deps = file_descriptor_protos
-        .into_iter()
-        .map(|fd_proto| FileDescriptor::new_dynamic(fd_proto, &[]).unwrap())
-        .collect::<Vec<_>>();
-    let fd = FileDescriptor::new_dynamic(fd_proto, &deps).change_context(Inspect)?;
-
-    let msg_name = single_msg_name(&fd)
-        .attach(format!("Schema file: {schema}"))
-        .change_context(Inspect)?;
-
-    // TODO: provide choice when there are multiple top-level types
-
-    let md = fd.message_by_package_relative_name(&msg_name).unwrap();
-
-    let file_contents = fs::read_to_string(&file)
-        .attach_with(|| format!("File: {file}"))
-        .change_context(Inspect)?;
-
-    let decoded_message = decode_any_base64(file_contents.trim_end())
-        .attach_with(|| format!("File: {file}"))
-        .change_context(Inspect)?;
-
-    let msg = md
-        .parse_from_bytes(&decoded_message)
-        .attach_with(|| format!("File: {file}"))
-        .change_context(Inspect)?;
-
-    let mut tui = tui::init().change_context(Inspect)?;
-    let mut app = tui::App::new(md, msg);
-    app.run(&mut tui).change_context(Inspect)?;
-    tui::restore().change_context(Inspect)?;
-
-    Ok(())
-}
-
-/// Returns name of single top-level message in schema.
-///
-/// # Errors
-///
-/// Returns error if there are more or less than 1 top-level message.
-fn single_msg_name(fd: &FileDescriptor) -> std::result::Result<String, Report<InvalidSchema>> {
-    let mut messages = fd.messages();
-
-    let md = messages
-        .next()
-        .ok_or(NoTopLevelMessages)
-        .change_context(InvalidSchema)?;
-
-    let more = messages.count();
-
-    if more == 0 {
-        Ok(md.name().to_owned())
-    } else {
-        Err(MultipleTopLevelMessages)
-            .attach(format!("Top-level messages found: {}", more + 1))
-            .change_context(InvalidSchema)
-    }
-}
-
-fn validate_schema(schema_path: Utf8PathBuf) -> std::result::Result<(), Report<anyhow::Error>> {
-    let fds = protobuf_parse::Parser::new()
-        .pure()
-        .includes(schema_path.parent().as_slice())
-        .input(schema_path)
-        .parse_and_typecheck()
-        .into_report()?;
-
-    let tf = text_format::print_to_string_pretty(fds.file_descriptors.first().unwrap());
-    println!("{tf}");
-
-    Ok(())
-}
-
-fn decode_any_base64(encoded: &str) -> std::result::Result<Vec<u8>, Report<base64::DecodeError>> {
-    Ok(BASE64_STANDARD
-        .decode(encoded)
-        .or_else(|_| BASE64_STANDARD_NO_PAD.decode(encoded))
-        .or_else(|_| BASE64_URL_SAFE.decode(encoded))
-        .or_else(|_| BASE64_URL_SAFE_NO_PAD.decode(encoded))
-        .map_err(Report::new)?)
 }

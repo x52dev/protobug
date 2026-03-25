@@ -1,0 +1,639 @@
+use std::{
+    fs,
+    io::{self, Read as _},
+};
+
+use base64::prelude::*;
+use camino::{Utf8Path, Utf8PathBuf};
+use error_stack::{IntoReportCompat as _, Report, ResultExt as _};
+use protobuf::{
+    MessageDyn,
+    descriptor::FileDescriptorProto,
+    reflect::{FileDescriptor, MessageDescriptor},
+    text_format,
+};
+
+use crate::{
+    error::{Inspect, InvalidSchema, MultipleTopLevelMessages, NoTopLevelMessages},
+    tui,
+};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum InputFormat {
+    #[default]
+    Auto,
+    Base64,
+    Hex,
+    Binary,
+}
+
+impl InputFormat {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Base64 => "base64",
+            Self::Hex => "hex",
+            Self::Binary => "binary",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SaveTargets {
+    pub json: Option<Utf8PathBuf>,
+    pub base64: Option<Utf8PathBuf>,
+    pub hex: Option<Utf8PathBuf>,
+    pub binary: Option<Utf8PathBuf>,
+}
+
+impl SaveTargets {
+    pub fn is_empty(&self) -> bool {
+        self.json.is_none() && self.base64.is_none() && self.hex.is_none() && self.binary.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InspectOptions {
+    pub schema: Utf8PathBuf,
+    pub message: Option<String>,
+    pub file: Option<Utf8PathBuf>,
+    pub input_format: InputFormat,
+    pub save_targets: SaveTargets,
+}
+
+pub struct Inspector {
+    md: MessageDescriptor,
+    data: Box<dyn MessageDyn>,
+    parse_error: Option<String>,
+}
+
+impl Inspector {
+    pub fn new(md: MessageDescriptor, data: Box<dyn MessageDyn>) -> Self {
+        Self {
+            md,
+            data,
+            parse_error: None,
+        }
+    }
+
+    pub fn apply_json(&mut self, json: &str) -> Result<(), String> {
+        match protobuf_json_mapping::parse_dyn_from_str(&self.md, json) {
+            Ok(msg) => {
+                self.data = msg;
+                self.parse_error = None;
+                Ok(())
+            }
+            Err(err) => {
+                let error = err.to_string();
+                self.parse_error = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+
+    pub fn parse_error(&self) -> Option<&str> {
+        self.parse_error.as_deref()
+    }
+
+    pub fn canonical_json(&self) -> std::result::Result<String, Report<Inspect>> {
+        let json = protobuf_json_mapping::print_to_string_with_options(
+            &*self.data,
+            &protobuf_json_mapping::PrintOptions {
+                enum_values_int: false,
+                proto_field_name: false,
+                always_output_default_values: true,
+                ..Default::default()
+            },
+        )
+        .change_context(Inspect)?;
+
+        let value = serde_json::from_str::<serde_json::Value>(&json).change_context(Inspect)?;
+        serde_json::to_string_pretty(&value).change_context(Inspect)
+    }
+
+    pub fn text_view(&self) -> String {
+        text_format::print_to_string_pretty(&*self.data)
+    }
+
+    pub fn bytes(&self) -> std::result::Result<Vec<u8>, Report<Inspect>> {
+        self.data.write_to_bytes_dyn().change_context(Inspect)
+    }
+
+    pub fn hex_view(&self) -> String {
+        match self.bytes() {
+            Ok(bytes) => bytes
+                .iter()
+                .fold(String::new(), |mut buf, byte| {
+                    use std::fmt::Write as _;
+                    write!(buf, "{byte:02x} ")
+                        .expect("formatting bytes into a string should always succeed");
+                    buf
+                })
+                .trim_end()
+                .to_owned(),
+            Err(err) => format!("<serialization error: {err}>"),
+        }
+    }
+
+    pub fn ascii_view(&self) -> String {
+        match self.bytes() {
+            Ok(bytes) => bytes.iter().fold(String::new(), |mut buf, byte| {
+                use std::fmt::Write as _;
+                let preview = match byte {
+                    byte if byte.is_ascii_whitespace() => ' ',
+                    byte if byte.is_ascii_graphic() => char::from(*byte),
+                    _ => '.',
+                };
+
+                write!(buf, "{preview}")
+                    .expect("formatting bytes into a string should always succeed");
+                buf
+            }),
+            Err(err) => format!("<serialization error: {err}>"),
+        }
+    }
+
+    pub fn save(
+        &self,
+        targets: &SaveTargets,
+    ) -> std::result::Result<Vec<Utf8PathBuf>, Report<Inspect>> {
+        if targets.is_empty() {
+            return Err(Report::new(Inspect)
+                .attach("No save targets were configured. Pass --save-* paths to enable Ctrl-S."));
+        }
+
+        let mut saved = Vec::new();
+        let bytes = self.bytes()?;
+
+        if let Some(path) = &targets.binary {
+            fs::write(path, &bytes)
+                .attach_with(|| format!("Output file: {path}"))
+                .change_context(Inspect)?;
+            saved.push(path.clone());
+        }
+
+        if let Some(path) = &targets.hex {
+            fs::write(path, hex::encode(&bytes))
+                .attach_with(|| format!("Output file: {path}"))
+                .change_context(Inspect)?;
+            saved.push(path.clone());
+        }
+
+        if let Some(path) = &targets.base64 {
+            fs::write(path, BASE64_STANDARD.encode(&bytes))
+                .attach_with(|| format!("Output file: {path}"))
+                .change_context(Inspect)?;
+            saved.push(path.clone());
+        }
+
+        if let Some(path) = &targets.json {
+            fs::write(path, self.canonical_json()?)
+                .attach_with(|| format!("Output file: {path}"))
+                .change_context(Inspect)?;
+            saved.push(path.clone());
+        }
+
+        Ok(saved)
+    }
+}
+
+pub fn run_inspect(options: InspectOptions) -> std::result::Result<(), Report<Inspect>> {
+    let input = read_input(options.file.as_deref())?;
+    let inspector = load_inspector(
+        options.schema.as_ref(),
+        options.message.as_deref(),
+        &input,
+        options.input_format,
+    )?;
+
+    let mut terminal = tui::Session::new().change_context(Inspect)?;
+    let mut app = tui::App::new(inspector, options.save_targets).change_context(Inspect)?;
+    app.run(terminal.terminal_mut()).change_context(Inspect)?;
+
+    Ok(())
+}
+
+pub fn validate_schema(
+    schema_path: Utf8PathBuf,
+) -> std::result::Result<String, Report<anyhow::Error>> {
+    let fds = protobuf_parse::Parser::new()
+        .pure()
+        .includes(schema_path.parent().as_slice())
+        .input(schema_path)
+        .parse_and_typecheck()
+        .into_report()?;
+
+    let tf = text_format::print_to_string_pretty(fds.file_descriptors.first().unwrap());
+    Ok(tf)
+}
+
+pub fn load_inspector(
+    schema: &Utf8Path,
+    message: Option<&str>,
+    raw_input: &[u8],
+    input_format: InputFormat,
+) -> std::result::Result<Inspector, Report<Inspect>> {
+    let fd = load_file_descriptor(schema)?;
+    let md = select_message(&fd, message)
+        .attach_with(|| format!("Schema file: {schema}"))
+        .change_context(Inspect)?;
+    let decoded = decode_input(raw_input, input_format)?;
+    let msg = md
+        .parse_from_bytes(&decoded)
+        .attach_with(|| format!("Message type: {}", md.name_to_package()))
+        .change_context(Inspect)?;
+
+    Ok(Inspector::new(md, msg))
+}
+
+pub fn available_message_names(fd: &FileDescriptor) -> Vec<String> {
+    let mut names = Vec::new();
+
+    for message in fd.messages() {
+        collect_message_names(message, &mut names);
+    }
+
+    names.sort();
+    names
+}
+
+fn collect_message_names(message: MessageDescriptor, names: &mut Vec<String>) {
+    names.push(message.name_to_package().to_owned());
+
+    for nested in message.nested_messages() {
+        collect_message_names(nested, names);
+    }
+}
+
+fn read_input(path: Option<&Utf8Path>) -> std::result::Result<Vec<u8>, Report<Inspect>> {
+    match path {
+        None => read_stdin(),
+        Some(path) if path.as_str() == "-" => read_stdin(),
+        Some(path) => fs::read(path)
+            .attach_with(|| format!("Input file: {path}"))
+            .change_context(Inspect),
+    }
+}
+
+fn read_stdin() -> std::result::Result<Vec<u8>, Report<Inspect>> {
+    let mut buf = Vec::new();
+
+    io::stdin()
+        .read_to_end(&mut buf)
+        .attach("Input source: stdin")
+        .change_context(Inspect)?;
+
+    Ok(buf)
+}
+
+fn load_file_descriptor(schema: &Utf8Path) -> std::result::Result<FileDescriptor, Report<Inspect>> {
+    let fds = protobuf_parse::Parser::new()
+        .pure()
+        .includes(schema.parent().as_slice())
+        .input(schema)
+        .parse_and_typecheck()
+        .into_report()
+        .attach_with(|| format!("Schema file: {schema}"))
+        .change_context(Inspect)?;
+
+    let descriptors = build_file_descriptors(fds.file_descriptors)?;
+    let schema_name = schema.file_name().unwrap_or(schema.as_str());
+
+    descriptors
+        .iter()
+        .find(|fd| fd.name() == schema_name)
+        .cloned()
+        .or_else(|| descriptors.last().cloned())
+        .ok_or_else(|| {
+            Report::new(Inspect).attach(format!(
+                "No file descriptors resolved from schema: {schema}"
+            ))
+        })
+}
+
+fn build_file_descriptors(
+    protos: Vec<FileDescriptorProto>,
+) -> std::result::Result<Vec<FileDescriptor>, Report<Inspect>> {
+    let mut pending = protos;
+    let mut built: Vec<FileDescriptor> = Vec::new();
+
+    while !pending.is_empty() {
+        let before = pending.len();
+        let mut index = 0;
+
+        while index < pending.len() {
+            let proto = &pending[index];
+            let ready = proto
+                .dependency
+                .iter()
+                .all(|dep| built.iter().any(|fd| fd.name() == dep.as_str()));
+
+            if ready {
+                let proto = pending.remove(index);
+                let deps = proto
+                    .dependency
+                    .iter()
+                    .map(|dep| {
+                        built
+                            .iter()
+                            .find(|fd| fd.name() == dep.as_str())
+                            .cloned()
+                            .expect("ready dependencies should always be present")
+                    })
+                    .collect::<Vec<_>>();
+
+                let fd = FileDescriptor::new_dynamic(proto, &deps).change_context(Inspect)?;
+                built.push(fd);
+            } else {
+                index += 1;
+            }
+        }
+
+        if pending.len() == before {
+            let unresolved = pending
+                .iter()
+                .map(|proto| proto.name().to_owned())
+                .collect::<Vec<_>>();
+
+            return Err(Report::new(Inspect).attach(format!(
+                "Could not resolve descriptor dependencies for: {}",
+                unresolved.join(", "),
+            )));
+        }
+    }
+
+    Ok(built)
+}
+
+fn select_message(
+    fd: &FileDescriptor,
+    message: Option<&str>,
+) -> std::result::Result<MessageDescriptor, Report<InvalidSchema>> {
+    let names = available_message_names(fd);
+
+    match message {
+        Some(name) => fd.message_by_package_relative_name(name).ok_or_else(|| {
+            Report::new(InvalidSchema)
+                .attach(format!("Requested message: {name}"))
+                .attach(format!("Available messages: {}", names.join(", ")))
+        }),
+        None if names.is_empty() => Err(NoTopLevelMessages).change_context(InvalidSchema),
+        None if names.len() == 1 => {
+            let name = &names[0];
+            fd.message_by_package_relative_name(name).ok_or_else(|| {
+                Report::new(InvalidSchema).attach(format!("Resolved message disappeared: {name}"))
+            })
+        }
+        None => Err(MultipleTopLevelMessages)
+            .attach(format!("Available messages: {}", names.join(", ")))
+            .change_context(InvalidSchema),
+    }
+}
+
+fn decode_input(
+    raw_input: &[u8],
+    input_format: InputFormat,
+) -> std::result::Result<Vec<u8>, Report<Inspect>> {
+    match input_format {
+        InputFormat::Binary => Ok(raw_input.to_vec()),
+        InputFormat::Base64 => decode_base64(raw_input),
+        InputFormat::Hex => decode_hex(raw_input),
+        InputFormat::Auto => {
+            if let Ok(text) = std::str::from_utf8(raw_input) {
+                let trimmed = text.trim();
+
+                if looks_like_hex(trimmed) {
+                    if let Ok(decoded) = decode_hex(raw_input) {
+                        return Ok(decoded);
+                    }
+                }
+
+                if looks_like_base64(trimmed) {
+                    if let Ok(decoded) = decode_base64(raw_input) {
+                        return Ok(decoded);
+                    }
+                }
+            }
+
+            Ok(raw_input.to_vec())
+        }
+    }
+}
+
+fn decode_base64(raw_input: &[u8]) -> std::result::Result<Vec<u8>, Report<Inspect>> {
+    let text = input_as_text(raw_input, InputFormat::Base64)?;
+    let compact = strip_ascii_whitespace(text);
+
+    BASE64_STANDARD
+        .decode(&compact)
+        .or_else(|_| BASE64_STANDARD_NO_PAD.decode(&compact))
+        .or_else(|_| BASE64_URL_SAFE.decode(&compact))
+        .or_else(|_| BASE64_URL_SAFE_NO_PAD.decode(&compact))
+        .attach("Input format: base64")
+        .change_context(Inspect)
+}
+
+fn decode_hex(raw_input: &[u8]) -> std::result::Result<Vec<u8>, Report<Inspect>> {
+    let text = input_as_text(raw_input, InputFormat::Hex)?;
+    let compact = strip_ascii_whitespace(text);
+
+    hex::decode(compact)
+        .attach("Input format: hex")
+        .change_context(Inspect)
+}
+
+fn input_as_text<'a>(
+    raw_input: &'a [u8],
+    format: InputFormat,
+) -> std::result::Result<&'a str, Report<Inspect>> {
+    std::str::from_utf8(raw_input)
+        .attach_with(|| format!("Input format: {}", format.as_str()))
+        .change_context(Inspect)
+}
+
+fn strip_ascii_whitespace(text: &str) -> String {
+    text.chars()
+        .filter(|ch| !ch.is_ascii_whitespace())
+        .collect()
+}
+
+fn looks_like_hex(text: &str) -> bool {
+    let compact = strip_ascii_whitespace(text);
+    !compact.is_empty()
+        && compact.len() % 2 == 0
+        && compact.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn looks_like_base64(text: &str) -> bool {
+    let compact = strip_ascii_whitespace(text);
+    !compact.is_empty()
+        && compact.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=' | b'-' | b'_')
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use camino::Utf8PathBuf;
+    use indoc::indoc;
+    use pretty_assertions::assert_eq;
+    use protobuf::{
+        EnumOrUnknown, Message as _, MessageField, SpecialFields,
+        well_known_types::timestamp::Timestamp,
+    };
+    use protogen::system_event::{
+        SystemEvent,
+        system_event::{Event as SystemEventVariant, MouseButton, MouseDown},
+    };
+    use tempfile::tempdir;
+
+    use super::*;
+
+    fn schema_path() -> Utf8PathBuf {
+        Utf8PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../protogen/proto/system-event.proto"
+        ))
+    }
+
+    fn sample_bytes() -> Vec<u8> {
+        SystemEvent {
+            timestamp: MessageField::some(Timestamp {
+                seconds: 1_234_567,
+                nanos: 123,
+                special_fields: SpecialFields::default(),
+            }),
+            reason: Some("user clicked".to_owned()),
+            event: Some(SystemEventVariant::Click(MouseDown {
+                button: EnumOrUnknown::new(MouseButton::Left),
+                x: 42,
+                y: 100,
+                ..Default::default()
+            })),
+            special_fields: SpecialFields::default(),
+        }
+        .write_to_bytes()
+        .unwrap()
+    }
+
+    #[test]
+    fn auto_detects_base64_and_hex_input() {
+        let bytes = sample_bytes();
+        let base64 = BASE64_STANDARD.encode(&bytes);
+        let hex = hex::encode(&bytes);
+
+        assert_eq!(
+            decode_input(base64.as_bytes(), InputFormat::Auto).unwrap(),
+            bytes,
+        );
+        assert_eq!(
+            decode_input(hex.as_bytes(), InputFormat::Auto).unwrap(),
+            bytes
+        );
+    }
+
+    #[test]
+    fn explicit_hex_format_ignores_whitespace() {
+        let bytes = sample_bytes();
+        let spaced_hex = bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert_eq!(
+            decode_input(spaced_hex.as_bytes(), InputFormat::Hex).unwrap(),
+            bytes,
+        );
+    }
+
+    #[test]
+    fn selecting_message_is_required_when_schema_has_multiple_messages() {
+        let dir = tempdir().unwrap();
+        let schema_path = Utf8PathBuf::from_path_buf(dir.path().join("multi.proto")).unwrap();
+        fs::write(
+            &schema_path,
+            indoc! {r#"
+                syntax = "proto3";
+
+                message Alpha {}
+                message Beta {}
+            "#},
+        )
+        .unwrap();
+
+        let fd = load_file_descriptor(schema_path.as_ref()).unwrap();
+        assert_eq!(available_message_names(&fd), vec!["Alpha", "Beta"]);
+        assert!(select_message(&fd, None).is_err());
+        assert_eq!(select_message(&fd, Some("Beta")).unwrap().name(), "Beta");
+    }
+
+    #[test]
+    fn inspector_tracks_parse_errors_without_losing_last_valid_message() {
+        let mut inspector = load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            &sample_bytes(),
+            InputFormat::Binary,
+        )
+        .unwrap();
+
+        let original = inspector.bytes().unwrap();
+
+        assert!(inspector.apply_json("{ not valid json").is_err());
+        assert!(inspector.parse_error().is_some());
+        assert_eq!(inspector.bytes().unwrap(), original);
+
+        let mut value =
+            serde_json::from_str::<serde_json::Value>(&inspector.canonical_json().unwrap())
+                .unwrap();
+        value["reason"] = serde_json::Value::String("updated".to_owned());
+
+        inspector
+            .apply_json(&serde_json::to_string_pretty(&value).unwrap())
+            .unwrap();
+
+        assert_eq!(inspector.parse_error(), None);
+        assert!(inspector.canonical_json().unwrap().contains("\"updated\""));
+    }
+
+    #[test]
+    fn inspector_saves_all_configured_output_formats() {
+        let dir = tempdir().unwrap();
+        let bytes = sample_bytes();
+        let inspector = load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            &bytes,
+            InputFormat::Binary,
+        )
+        .unwrap();
+
+        let targets = SaveTargets {
+            json: Some(Utf8PathBuf::from_path_buf(dir.path().join("message.json")).unwrap()),
+            base64: Some(Utf8PathBuf::from_path_buf(dir.path().join("message.base64")).unwrap()),
+            hex: Some(Utf8PathBuf::from_path_buf(dir.path().join("message.hex")).unwrap()),
+            binary: Some(Utf8PathBuf::from_path_buf(dir.path().join("message.bin")).unwrap()),
+        };
+
+        let saved = inspector.save(&targets).unwrap();
+
+        assert_eq!(saved.len(), 4);
+        assert_eq!(
+            fs::read_to_string(targets.base64.as_ref().unwrap()).unwrap(),
+            BASE64_STANDARD.encode(&bytes),
+        );
+        assert_eq!(
+            fs::read_to_string(targets.hex.as_ref().unwrap()).unwrap(),
+            hex::encode(&bytes),
+        );
+        assert_eq!(fs::read(targets.binary.as_ref().unwrap()).unwrap(), bytes);
+        assert!(
+            fs::read_to_string(targets.json.as_ref().unwrap())
+                .unwrap()
+                .contains("\"user clicked\"")
+        );
+    }
+}

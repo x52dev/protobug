@@ -1,10 +1,9 @@
-use std::{fmt::Write as _, io};
+use std::io;
 
 use crossterm::{
     event::{self, KeyCode, KeyEvent, KeyModifiers},
     execute, terminal,
 };
-use protobuf::{reflect::MessageDescriptor, text_format};
 use ratatui::{
     Terminal,
     prelude::*,
@@ -12,57 +11,78 @@ use ratatui::{
 };
 use tui_textarea::TextArea;
 
-use crate::line_wrap::LineWrap;
+use crate::{
+    error::Inspect,
+    inspector::{Inspector, SaveTargets},
+    line_wrap::LineWrap,
+};
 
 pub type Tui = Terminal<CrosstermBackend<io::Stdout>>;
 
-/// Sets up terminal for TUI display.
-pub(crate) fn init() -> io::Result<Tui> {
-    execute!(io::stdout(), terminal::EnterAlternateScreen)?;
-    terminal::enable_raw_mode()?;
-    Terminal::new(CrosstermBackend::new(io::stdout()))
+pub(crate) struct Session {
+    terminal: Tui,
 }
 
-/// Restores terminal to original state..
-pub(crate) fn restore() -> io::Result<()> {
-    execute!(io::stdout(), terminal::LeaveAlternateScreen)?;
-    terminal::disable_raw_mode()?;
-    Ok(())
+impl Session {
+    /// Sets up terminal for TUI display.
+    pub(crate) fn new() -> io::Result<Self> {
+        execute!(io::stdout(), terminal::EnterAlternateScreen)?;
+        terminal::enable_raw_mode()?;
+
+        Ok(Self {
+            terminal: Terminal::new(CrosstermBackend::new(io::stdout()))?,
+        })
+    }
+
+    pub(crate) fn terminal_mut(&mut self) -> &mut Tui {
+        &mut self.terminal
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        let _ = terminal::disable_raw_mode();
+        let _ = execute!(io::stdout(), terminal::LeaveAlternateScreen);
+    }
 }
 
 pub(crate) struct App<'a> {
-    md: MessageDescriptor,
-    data: Box<dyn protobuf::MessageDyn>,
+    inspector: Inspector,
     json_editor: TextArea<'a>,
+    save_targets: SaveTargets,
+    last_status: Option<Status>,
     exit: bool,
+}
+
+#[derive(Debug, Clone)]
+struct Status {
+    kind: StatusKind,
+    message: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum StatusKind {
+    Info,
+    Error,
 }
 
 impl App<'_> {
     /// Constructs new TUI app widget.
-    pub(crate) fn new(md: MessageDescriptor, data: Box<dyn protobuf::MessageDyn>) -> Self {
-        let json = protobuf_json_mapping::print_to_string_with_options(
-            &*data,
-            &protobuf_json_mapping::PrintOptions {
-                enum_values_int: false,
-                proto_field_name: false,
-                always_output_default_values: true,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let json = serde_json::to_string_pretty(
-            &serde_json::from_str::<serde_json::Value>(&json).unwrap(),
-        )
-        .unwrap();
+    pub(crate) fn new(
+        inspector: Inspector,
+        save_targets: SaveTargets,
+    ) -> std::result::Result<Self, error_stack::Report<Inspect>> {
+        let json = inspector.canonical_json()?;
 
         let json_editor = TextArea::new(json.lines().map(ToOwned::to_owned).collect());
 
-        Self {
-            md,
-            data,
+        Ok(Self {
+            inspector,
             json_editor,
+            save_targets,
+            last_status: None,
             exit: false,
-        }
+        })
     }
 
     /// Runs main execution loop for the TUI app.
@@ -76,43 +96,43 @@ impl App<'_> {
     }
 
     fn render_frame(&mut self, frame: &mut Frame<'_>) {
+        let root_layout = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]);
+        let [main_area, footer_area] = root_layout.areas(frame.area());
+
         let layout = Layout::horizontal(Constraint::from_fills([1, 1]));
         let left_layout = Layout::vertical(Constraint::from_fills([1, 1, 1]));
-        let [left_area, right_area] = layout.areas(frame.area());
+        let [left_area, right_area] = layout.areas(main_area);
         let [top_left_area, middle_left_area, bottom_left_area] = left_layout.areas(left_area);
 
-        let tf_repr = text_format::print_to_string_pretty(&*self.data);
-
-        let bytes = self.data.write_to_bytes_dyn().unwrap();
-
-        let hex_repr = bytes.iter().fold(String::new(), |mut buf, byte| {
-            write!(buf, "{byte:02x} ").expect("Formatting to strings should always be possible");
-            buf
-        });
+        let tf_repr = self.inspector.text_view();
+        let hex_repr = self.inspector.hex_view();
+        let ascii_repr = self.inspector.ascii_view();
 
         let hex_repr_wrapped = LineWrap::new(hex_repr, 16 * 3).to_string();
-
-        let ascii_repr = bytes.iter().fold(String::new(), |mut buf, byte| {
-            let preview = match byte {
-                byte if byte.is_ascii_whitespace() => ' ',
-                byte if byte.is_ascii_graphic() => char::from(*byte),
-                _ => '.',
-            };
-
-            debug_assert_eq!(preview.len_utf8(), 1, "{preview} is not a single byte");
-
-            write!(buf, "{preview}").expect("Formatting to strings should always be possible");
-            buf
-        });
-
         let ascii_repr_wrapped = LineWrap::new(ascii_repr, 16).to_string();
 
-        let para_tf = Paragraph::new(tf_repr);
-        let para_hex = Paragraph::new(hex_repr_wrapped);
-        let para_ascii = Paragraph::new(ascii_repr_wrapped);
+        let para_tf = Paragraph::new(tf_repr).block(
+            Block::default()
+                .title("Protobuf")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Plain),
+        );
+        let para_hex = Paragraph::new(hex_repr_wrapped).block(
+            Block::default()
+                .title("Hex")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Plain),
+        );
+        let para_ascii = Paragraph::new(ascii_repr_wrapped).block(
+            Block::default()
+                .title("ASCII")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Plain),
+        );
 
         let right_block = Block::default()
-            .borders(Borders::LEFT)
+            .title("JSON")
+            .borders(Borders::ALL)
             .border_type(BorderType::Plain);
 
         frame.render_widget(para_tf, top_left_area);
@@ -121,6 +141,13 @@ impl App<'_> {
 
         frame.render_widget(&self.json_editor, right_block.inner(right_area));
         frame.render_widget(right_block, right_area);
+
+        let footer_block = Block::default().borders(Borders::TOP);
+        frame.render_widget(
+            Paragraph::new(self.status_line()).style(self.status_style()),
+            footer_block.inner(footer_area),
+        );
+        frame.render_widget(footer_block, footer_area);
     }
 
     fn handle_events(&mut self) -> io::Result<()> {
@@ -138,15 +165,74 @@ impl App<'_> {
                 self.exit = true;
             }
 
+            event::Event::Key(
+                ev @ KeyEvent {
+                    code: KeyCode::Char('s'),
+                    ..
+                },
+            ) if ev.kind == event::KeyEventKind::Press
+                && ev.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.save_outputs();
+            }
+
             input => {
-                self.json_editor.input(input);
-                let json = self.json_editor.lines().join(" ");
-                if let Ok(msg) = protobuf_json_mapping::parse_dyn_from_str(&self.md, &json) {
-                    self.data = msg;
+                if self.json_editor.input(input) {
+                    let json = self.json_editor.lines().join("\n");
+                    if let Err(error) = self.inspector.apply_json(&json) {
+                        self.last_status = Some(Status {
+                            kind: StatusKind::Error,
+                            message: format!("Parse error: {error}"),
+                        });
+                    } else if matches!(
+                        self.last_status.as_ref().map(|status| status.kind),
+                        Some(StatusKind::Error)
+                    ) {
+                        self.last_status = None;
+                    }
                 }
             }
         };
 
         Ok(())
+    }
+
+    fn save_outputs(&mut self) {
+        match self.inspector.save(&self.save_targets) {
+            Ok(paths) => {
+                let message = paths
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                self.last_status = Some(Status {
+                    kind: StatusKind::Info,
+                    message: format!("Saved outputs: {message}"),
+                });
+            }
+            Err(error) => {
+                self.last_status = Some(Status {
+                    kind: StatusKind::Error,
+                    message: error.to_string(),
+                });
+            }
+        }
+    }
+
+    fn status_line(&self) -> String {
+        if let Some(status) = &self.last_status {
+            return status.message.clone();
+        }
+
+        "Ctrl-C quit | Ctrl-S save configured outputs".to_owned()
+    }
+
+    fn status_style(&self) -> Style {
+        match self.last_status.as_ref().map(|status| status.kind) {
+            Some(StatusKind::Info) => Style::default().fg(Color::Green),
+            Some(StatusKind::Error) => Style::default().fg(Color::Red),
+            None => Style::default().fg(Color::DarkGray),
+        }
     }
 }
