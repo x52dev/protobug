@@ -13,7 +13,7 @@ use tui_textarea::TextArea;
 
 use crate::{
     error::Inspect,
-    inspector::{Inspector, SaveTargets},
+    inspector::{DisplayOptions, Inspector, SaveTargets},
     selection::{self, FieldPath},
 };
 
@@ -50,6 +50,7 @@ pub(crate) struct App<'a> {
     inspector: Inspector,
     json_editor: TextArea<'a>,
     save_targets: SaveTargets,
+    display_options: DisplayOptions,
     last_status: Option<Status>,
     exit: bool,
 }
@@ -71,6 +72,7 @@ impl App<'_> {
     pub(crate) fn new(
         inspector: Inspector,
         save_targets: SaveTargets,
+        display_options: DisplayOptions,
     ) -> std::result::Result<Self, error_stack::Report<Inspect>> {
         let json = inspector.canonical_json()?;
 
@@ -80,6 +82,7 @@ impl App<'_> {
             inspector,
             json_editor,
             save_targets,
+            display_options,
             last_status: None,
             exit: false,
         })
@@ -187,6 +190,42 @@ impl App<'_> {
                 self.save_outputs();
             }
 
+            event::Event::Key(
+                ev @ KeyEvent {
+                    code: KeyCode::Char('['),
+                    ..
+                },
+            ) if ev.kind == event::KeyEventKind::Press => {
+                self.adjust_hex_width(-1);
+            }
+
+            event::Event::Key(
+                ev @ KeyEvent {
+                    code: KeyCode::Char(']'),
+                    ..
+                },
+            ) if ev.kind == event::KeyEventKind::Press => {
+                self.adjust_hex_width(1);
+            }
+
+            event::Event::Key(
+                ev @ KeyEvent {
+                    code: KeyCode::Char('{'),
+                    ..
+                },
+            ) if ev.kind == event::KeyEventKind::Press => {
+                self.adjust_ascii_width(-1);
+            }
+
+            event::Event::Key(
+                ev @ KeyEvent {
+                    code: KeyCode::Char('}'),
+                    ..
+                },
+            ) if ev.kind == event::KeyEventKind::Press => {
+                self.adjust_ascii_width(1);
+            }
+
             input => {
                 if self.json_editor.input(input) {
                     let json = self.json_editor.lines().join("\n");
@@ -236,7 +275,10 @@ impl App<'_> {
             return status.message.clone();
         }
 
-        "Ctrl-C quit | Ctrl-S save configured outputs".to_owned()
+        format!(
+            "Ctrl-C quit | Ctrl-S save | [ ] hex {} | {{ }} ascii {}",
+            self.display_options.hex_width, self.display_options.ascii_width,
+        )
     }
 
     fn status_style(&self) -> Style {
@@ -279,49 +321,71 @@ impl App<'_> {
 
     fn hex_text(&self, highlighted_bytes: &std::collections::BTreeSet<usize>) -> Text<'static> {
         match self.inspector.bytes() {
-            Ok(bytes) => Text::from(render_byte_lines(&bytes, highlighted_bytes, " ", |byte| {
-                format!("{byte:02x}")
-            })),
+            Ok(bytes) => Text::from(render_byte_lines(
+                &bytes,
+                highlighted_bytes,
+                self.display_options.hex_width,
+                " ",
+                |byte| format!("{byte:02x}"),
+            )),
             Err(error) => Text::from(error.to_string()),
         }
     }
 
     fn ascii_text(&self, highlighted_bytes: &std::collections::BTreeSet<usize>) -> Text<'static> {
         match self.inspector.bytes() {
-            Ok(bytes) => {
-                Text::from(render_byte_lines(
-                    &bytes,
-                    highlighted_bytes,
-                    "",
-                    |byte| match byte {
-                        byte if byte.is_ascii_whitespace() => " ".to_owned(),
-                        byte if byte.is_ascii_graphic() => char::from(byte).to_string(),
-                        _ => ".".to_owned(),
-                    },
-                ))
-            }
+            Ok(bytes) => Text::from(render_byte_lines(
+                &bytes,
+                highlighted_bytes,
+                self.display_options.ascii_width,
+                "",
+                |byte| match byte {
+                    byte if byte.is_ascii_whitespace() => " ".to_owned(),
+                    byte if byte.is_ascii_graphic() => char::from(byte).to_string(),
+                    _ => ".".to_owned(),
+                },
+            )),
             Err(error) => Text::from(error.to_string()),
         }
+    }
+
+    fn adjust_hex_width(&mut self, delta: isize) {
+        self.display_options.hex_width = adjust_width(self.display_options.hex_width, delta);
+        self.last_status = Some(Status {
+            kind: StatusKind::Info,
+            message: format!("Hex width set to {}", self.display_options.hex_width),
+        });
+    }
+
+    fn adjust_ascii_width(&mut self, delta: isize) {
+        self.display_options.ascii_width = adjust_width(self.display_options.ascii_width, delta);
+        self.last_status = Some(Status {
+            kind: StatusKind::Info,
+            message: format!("ASCII width set to {}", self.display_options.ascii_width),
+        });
     }
 }
 
 fn render_byte_lines<F>(
     bytes: &[u8],
     highlighted_bytes: &std::collections::BTreeSet<usize>,
+    width: usize,
     separator: &str,
     render: F,
 ) -> Vec<Line<'static>>
 where
     F: Fn(u8) -> String,
 {
+    let width = width.max(1);
+
     bytes
-        .chunks(16)
+        .chunks(width)
         .enumerate()
         .map(|(chunk_index, chunk)| {
             let mut spans = Vec::new();
 
             for (index_in_chunk, byte) in chunk.iter().enumerate() {
-                let index = chunk_index * 16 + index_in_chunk;
+                let index = chunk_index * width + index_in_chunk;
                 let style = if highlighted_bytes.contains(&index) {
                     highlight_style()
                 } else {
@@ -338,6 +402,14 @@ where
             Line::from(spans)
         })
         .collect()
+}
+
+fn adjust_width(width: usize, delta: isize) -> usize {
+    if delta >= 0 {
+        width.saturating_add(delta as usize).max(1)
+    } else {
+        width.saturating_sub(delta.unsigned_abs()).max(1)
+    }
 }
 
 fn highlight_style() -> Style {
@@ -370,7 +442,7 @@ mod tests {
     use tui_textarea::CursorMove;
 
     use super::*;
-    use crate::inspector::{InputFormat, load_inspector};
+    use crate::inspector::{DisplayOptions, InputFormat, load_inspector};
 
     fn schema_path() -> Utf8PathBuf {
         Utf8PathBuf::from(concat!(
@@ -433,7 +505,8 @@ mod tests {
             InputFormat::Binary,
         )
         .unwrap();
-        let mut app = App::new(inspector, SaveTargets::default()).unwrap();
+        let mut app =
+            App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
 
         let rendered = snapshot_text(&mut app);
 
@@ -449,7 +522,8 @@ mod tests {
             InputFormat::Binary,
         )
         .unwrap();
-        let mut app = App::new(inspector, SaveTargets::default()).unwrap();
+        let mut app =
+            App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
         app.last_status = Some(Status {
             kind: StatusKind::Error,
             message: "Parse error: expected value".to_owned(),
@@ -476,6 +550,7 @@ mod tests {
                 json: Some(Utf8PathBuf::from_path_buf(dir.path().join("message.json")).unwrap()),
                 ..SaveTargets::default()
             },
+            DisplayOptions::default(),
         )
         .unwrap();
 
@@ -503,7 +578,8 @@ mod tests {
             InputFormat::Binary,
         )
         .unwrap();
-        let mut app = App::new(inspector, SaveTargets::default()).unwrap();
+        let mut app =
+            App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
 
         move_cursor_to(&mut app, "\"seconds\"");
         let json = app.current_json();
@@ -551,13 +627,61 @@ mod tests {
             InputFormat::Binary,
         )
         .unwrap();
-        let mut app = App::new(inspector, SaveTargets::default()).unwrap();
+        let mut app =
+            App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
 
         move_cursor_to(&mut app, "\"button\"");
 
         let rendered = render_text(&mut app);
 
         assert!(rendered.contains("Default enum Left is omitted on the wire"));
+    }
+
+    #[test]
+    fn render_respects_custom_hex_and_ascii_widths() {
+        let inspector = load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            &sample_bytes(),
+            InputFormat::Binary,
+        )
+        .unwrap();
+        let app = App::new(
+            inspector,
+            SaveTargets::default(),
+            DisplayOptions {
+                hex_width: 8,
+                ascii_width: 8,
+            },
+        )
+        .unwrap();
+
+        let hex = app.hex_text(&Default::default());
+        let ascii = app.ascii_text(&Default::default());
+
+        assert_eq!(hex.lines.len(), 4);
+        assert_eq!(ascii.lines.len(), 4);
+    }
+
+    #[test]
+    fn adjusting_width_updates_status_message() {
+        let inspector = load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            &sample_bytes(),
+            InputFormat::Binary,
+        )
+        .unwrap();
+        let mut app =
+            App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
+
+        app.adjust_hex_width(-8);
+        assert_eq!(app.display_options.hex_width, 8);
+        assert_eq!(app.status_line(), "Hex width set to 8");
+
+        app.adjust_ascii_width(4);
+        assert_eq!(app.display_options.ascii_width, 20);
+        assert_eq!(app.status_line(), "ASCII width set to 20");
     }
 
     fn move_cursor_to(app: &mut App<'_>, needle: &str) {

@@ -63,7 +63,23 @@ pub struct InspectOptions {
     pub message: Option<String>,
     pub file: Option<Utf8PathBuf>,
     pub input_format: InputFormat,
+    pub display_options: DisplayOptions,
     pub save_targets: SaveTargets,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayOptions {
+    pub hex_width: usize,
+    pub ascii_width: usize,
+}
+
+impl Default for DisplayOptions {
+    fn default() -> Self {
+        Self {
+            hex_width: 16,
+            ascii_width: 16,
+        }
+    }
 }
 
 pub struct Inspector {
@@ -254,7 +270,8 @@ pub fn run_inspect(options: InspectOptions) -> std::result::Result<(), Report<In
     )?;
 
     let mut terminal = tui::Session::new().change_context(Inspect)?;
-    let mut app = tui::App::new(inspector, options.save_targets).change_context(Inspect)?;
+    let mut app = tui::App::new(inspector, options.save_targets, options.display_options)
+        .change_context(Inspect)?;
     app.run(terminal.terminal_mut()).change_context(Inspect)?;
 
     Ok(())
