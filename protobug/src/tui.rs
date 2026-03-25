@@ -236,3 +236,133 @@ impl App<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use camino::Utf8PathBuf;
+    use protobuf::{
+        EnumOrUnknown, Message as _, MessageField, SpecialFields,
+        well_known_types::timestamp::Timestamp,
+    };
+    use protogen::system_event::{
+        SystemEvent,
+        system_event::{Event as SystemEventVariant, MouseButton, MouseDown},
+    };
+    use ratatui::{Terminal, backend::TestBackend};
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::inspector::{InputFormat, load_inspector};
+
+    fn schema_path() -> Utf8PathBuf {
+        Utf8PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../protogen/proto/system-event.proto"
+        ))
+    }
+
+    fn sample_bytes() -> Vec<u8> {
+        SystemEvent {
+            timestamp: MessageField::some(Timestamp {
+                seconds: 1_234_567,
+                nanos: 123,
+                special_fields: SpecialFields::default(),
+            }),
+            reason: Some("user clicked".to_owned()),
+            event: Some(SystemEventVariant::Click(MouseDown {
+                button: EnumOrUnknown::new(MouseButton::Left),
+                x: 42,
+                y: 100,
+                ..Default::default()
+            })),
+            special_fields: SpecialFields::default(),
+        }
+        .write_to_bytes()
+        .unwrap()
+    }
+
+    fn render_text(app: &mut App<'_>) -> String {
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.render_frame(frame)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+
+        buffer
+            .content
+            .chunks(buffer.area.width as usize)
+            .map(|line| line.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn render_shows_default_footer_help() {
+        let inspector = load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            &sample_bytes(),
+            InputFormat::Binary,
+        )
+        .unwrap();
+        let mut app = App::new(inspector, SaveTargets::default()).unwrap();
+
+        let rendered = render_text(&mut app);
+
+        assert!(rendered.contains("Ctrl-C quit | Ctrl-S save configured outputs"));
+    }
+
+    #[test]
+    fn render_shows_error_status_footer() {
+        let inspector = load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            &sample_bytes(),
+            InputFormat::Binary,
+        )
+        .unwrap();
+        let mut app = App::new(inspector, SaveTargets::default()).unwrap();
+        app.last_status = Some(Status {
+            kind: StatusKind::Error,
+            message: "Parse error: expected value".to_owned(),
+        });
+
+        let rendered = render_text(&mut app);
+
+        assert!(rendered.contains("Parse error: expected value"));
+    }
+
+    #[test]
+    fn save_action_updates_status_message() {
+        let dir = tempdir().unwrap();
+        let inspector = load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            &sample_bytes(),
+            InputFormat::Binary,
+        )
+        .unwrap();
+        let mut app = App::new(
+            inspector,
+            SaveTargets {
+                json: Some(Utf8PathBuf::from_path_buf(dir.path().join("message.json")).unwrap()),
+                ..SaveTargets::default()
+            },
+        )
+        .unwrap();
+
+        app.save_outputs();
+
+        assert!(matches!(
+            app.last_status.as_ref().map(|status| status.kind),
+            Some(StatusKind::Info)
+        ));
+        assert!(
+            app.last_status
+                .as_ref()
+                .unwrap()
+                .message
+                .contains("Saved outputs:")
+        );
+    }
+}

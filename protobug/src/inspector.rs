@@ -219,11 +219,20 @@ pub fn validate_schema(
     let fds = protobuf_parse::Parser::new()
         .pure()
         .includes(schema_path.parent().as_slice())
-        .input(schema_path)
+        .input(&schema_path)
         .parse_and_typecheck()
         .into_report()?;
 
-    let tf = text_format::print_to_string_pretty(fds.file_descriptors.first().unwrap());
+    let schema_name = schema_path.file_name().unwrap_or(schema_path.as_str());
+    let fd = fds
+        .file_descriptors
+        .iter()
+        .find(|fd| fd.name() == schema_name)
+        .or_else(|| fds.file_descriptors.last())
+        .ok_or_else(|| anyhow::anyhow!("No file descriptors resolved from schema: {schema_path}"))
+        .into_report()?;
+
+    let tf = text_format::print_to_string_pretty(fd);
     Ok(tf)
 }
 
@@ -635,5 +644,13 @@ mod tests {
                 .unwrap()
                 .contains("\"user clicked\"")
         );
+    }
+
+    #[test]
+    fn validate_schema_returns_the_requested_schema_descriptor() {
+        let descriptor = validate_schema(schema_path()).unwrap();
+
+        assert!(descriptor.contains("name: \"SystemEvent\""));
+        assert!(!descriptor.contains("name: \"Timestamp\""));
     }
 }
