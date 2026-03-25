@@ -240,6 +240,7 @@ impl App<'_> {
 #[cfg(test)]
 mod tests {
     use camino::Utf8PathBuf;
+    use insta::assert_snapshot;
     use protobuf::{
         EnumOrUnknown, Message as _, MessageField, SpecialFields,
         well_known_types::timestamp::Timestamp,
@@ -296,8 +297,18 @@ mod tests {
             .join("\n")
     }
 
+    fn snapshot_text(app: &mut App<'_>) -> String {
+        render_text(app)
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim_end()
+            .to_owned()
+    }
+
     #[test]
-    fn render_shows_default_footer_help() {
+    fn render_matches_default_layout() {
         let inspector = load_inspector(
             schema_path().as_ref(),
             Some("SystemEvent"),
@@ -307,13 +318,13 @@ mod tests {
         .unwrap();
         let mut app = App::new(inspector, SaveTargets::default()).unwrap();
 
-        let rendered = render_text(&mut app);
+        let rendered = snapshot_text(&mut app);
 
-        assert!(rendered.contains("Ctrl-C quit | Ctrl-S save configured outputs"));
+        assert_snapshot!(rendered);
     }
 
     #[test]
-    fn render_shows_error_status_footer() {
+    fn render_matches_error_layout() {
         let inspector = load_inspector(
             schema_path().as_ref(),
             Some("SystemEvent"),
@@ -327,9 +338,9 @@ mod tests {
             message: "Parse error: expected value".to_owned(),
         });
 
-        let rendered = render_text(&mut app);
+        let rendered = snapshot_text(&mut app);
 
-        assert!(rendered.contains("Parse error: expected value"));
+        assert_snapshot!(rendered);
     }
 
     #[test]
