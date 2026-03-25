@@ -14,7 +14,7 @@ use tui_textarea::TextArea;
 use crate::{
     error::Inspect,
     inspector::{Inspector, SaveTargets},
-    line_wrap::LineWrap,
+    selection::{self, FieldPath},
 };
 
 pub type Tui = Terminal<CrosstermBackend<io::Stdout>>;
@@ -104,26 +104,26 @@ impl App<'_> {
         let [left_area, right_area] = layout.areas(main_area);
         let [top_left_area, middle_left_area, bottom_left_area] = left_layout.areas(left_area);
 
-        let tf_repr = self.inspector.text_view();
-        let hex_repr = self.inspector.hex_view();
-        let ascii_repr = self.inspector.ascii_view();
+        let json = self.current_json();
+        let selected_path = self.current_selected_path(&json);
+        let highlighted_bytes = selected_path
+            .as_ref()
+            .and_then(|path| self.inspector.highlighted_byte_indices(path).ok())
+            .unwrap_or_default();
 
-        let hex_repr_wrapped = LineWrap::new(hex_repr, 16 * 3).to_string();
-        let ascii_repr_wrapped = LineWrap::new(ascii_repr, 16).to_string();
-
-        let para_tf = Paragraph::new(tf_repr).block(
+        let para_tf = Paragraph::new(self.protobuf_text(selected_path.as_ref())).block(
             Block::default()
                 .title("Protobuf")
                 .borders(Borders::ALL)
                 .border_type(BorderType::Plain),
         );
-        let para_hex = Paragraph::new(hex_repr_wrapped).block(
+        let para_hex = Paragraph::new(self.hex_text(&highlighted_bytes)).block(
             Block::default()
                 .title("Hex")
                 .borders(Borders::ALL)
                 .border_type(BorderType::Plain),
         );
-        let para_ascii = Paragraph::new(ascii_repr_wrapped).block(
+        let para_ascii = Paragraph::new(self.ascii_text(&highlighted_bytes)).block(
             Block::default()
                 .title("ASCII")
                 .borders(Borders::ALL)
@@ -235,6 +235,105 @@ impl App<'_> {
             None => Style::default().fg(Color::DarkGray),
         }
     }
+
+    fn current_json(&self) -> String {
+        self.json_editor.lines().join("\n")
+    }
+
+    fn current_selected_path(&self, json: &str) -> Option<FieldPath> {
+        if self.inspector.parse_error().is_some() {
+            return None;
+        }
+
+        self.inspector
+            .selected_path_for_json_cursor(json, self.json_editor.cursor())
+    }
+
+    fn protobuf_text(&self, selected_path: Option<&FieldPath>) -> Text<'static> {
+        let lines = self
+            .inspector
+            .protobuf_lines()
+            .into_iter()
+            .map(|line| {
+                let style = selected_path
+                    .filter(|selected| selection::related_path(selected, &line.path))
+                    .map_or_else(Style::default, |_| highlight_style());
+
+                Line::from(vec![Span::styled(line.text, style)])
+            })
+            .collect::<Vec<_>>();
+
+        Text::from(lines)
+    }
+
+    fn hex_text(&self, highlighted_bytes: &std::collections::BTreeSet<usize>) -> Text<'static> {
+        match self.inspector.bytes() {
+            Ok(bytes) => Text::from(render_byte_lines(&bytes, highlighted_bytes, " ", |byte| {
+                format!("{byte:02x}")
+            })),
+            Err(error) => Text::from(error.to_string()),
+        }
+    }
+
+    fn ascii_text(&self, highlighted_bytes: &std::collections::BTreeSet<usize>) -> Text<'static> {
+        match self.inspector.bytes() {
+            Ok(bytes) => {
+                Text::from(render_byte_lines(
+                    &bytes,
+                    highlighted_bytes,
+                    "",
+                    |byte| match byte {
+                        byte if byte.is_ascii_whitespace() => " ".to_owned(),
+                        byte if byte.is_ascii_graphic() => char::from(byte).to_string(),
+                        _ => ".".to_owned(),
+                    },
+                ))
+            }
+            Err(error) => Text::from(error.to_string()),
+        }
+    }
+}
+
+fn render_byte_lines<F>(
+    bytes: &[u8],
+    highlighted_bytes: &std::collections::BTreeSet<usize>,
+    separator: &str,
+    render: F,
+) -> Vec<Line<'static>>
+where
+    F: Fn(u8) -> String,
+{
+    bytes
+        .chunks(16)
+        .enumerate()
+        .map(|(chunk_index, chunk)| {
+            let mut spans = Vec::new();
+
+            for (index_in_chunk, byte) in chunk.iter().enumerate() {
+                let index = chunk_index * 16 + index_in_chunk;
+                let style = if highlighted_bytes.contains(&index) {
+                    highlight_style()
+                } else {
+                    Style::default()
+                };
+
+                spans.push(Span::styled(render(*byte), style));
+
+                if index_in_chunk + 1 < chunk.len() {
+                    spans.push(Span::raw(separator.to_owned()));
+                }
+            }
+
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn highlight_style() -> Style {
+    Style::default()
+        .bg(Color::Blue)
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD)
 }
 
 #[cfg(test)]
@@ -251,6 +350,7 @@ mod tests {
     };
     use ratatui::{Terminal, backend::TestBackend};
     use tempfile::tempdir;
+    use tui_textarea::CursorMove;
 
     use super::*;
     use crate::inspector::{InputFormat, load_inspector};
@@ -375,5 +475,77 @@ mod tests {
                 .message
                 .contains("Saved outputs:")
         );
+    }
+
+    #[test]
+    fn render_highlights_related_panes_for_selected_json_field() {
+        let inspector = load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            &sample_bytes(),
+            InputFormat::Binary,
+        )
+        .unwrap();
+        let mut app = App::new(inspector, SaveTargets::default()).unwrap();
+
+        move_cursor_to(&mut app, "\"seconds\"");
+        let json = app.current_json();
+        let selected_path = app.current_selected_path(&json);
+        assert_eq!(
+            selected_path,
+            Some(vec![
+                selection::FieldPathSegment::Field("timestamp".to_owned()),
+                selection::FieldPathSegment::Field("seconds".to_owned()),
+            ])
+        );
+        let protobuf = app.protobuf_text(selected_path.as_ref());
+        assert!(protobuf.lines.iter().any(|line| {
+            line.spans.iter().any(|span| {
+                span.content.as_ref().contains("seconds: 1234567")
+                    && span.style.bg == Some(Color::Blue)
+                    && span.style.fg == Some(Color::White)
+            })
+        }));
+        let highlighted_bytes = app
+            .inspector
+            .highlighted_byte_indices(selected_path.as_ref().unwrap())
+            .unwrap();
+        let hex = app.hex_text(&highlighted_bytes);
+        let ascii = app.ascii_text(&highlighted_bytes);
+
+        let highlighted_hex = highlighted_span_contents(&hex);
+        assert!(
+            highlighted_hex
+                .windows(4)
+                .any(|window| window == ["08", "87", "ad", "4b"])
+        );
+
+        let highlighted_ascii = highlighted_span_contents(&ascii);
+        assert_eq!(highlighted_ascii.len(), 4);
+        assert!(highlighted_ascii.contains(&"K".to_owned()));
+    }
+
+    fn move_cursor_to(app: &mut App<'_>, needle: &str) {
+        let (row, col) = app
+            .json_editor
+            .lines()
+            .iter()
+            .enumerate()
+            .find_map(|(row, line)| line.find(needle).map(|col| (row, col)))
+            .unwrap();
+
+        app.json_editor
+            .move_cursor(CursorMove::Jump(row as u16, col as u16));
+    }
+
+    fn highlighted_span_contents(text: &Text<'_>) -> Vec<String> {
+        text.lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .filter(|span| {
+                span.style.bg == Some(Color::Blue) && span.style.fg == Some(Color::White)
+            })
+            .map(|span| span.content.to_string())
+            .collect()
     }
 }

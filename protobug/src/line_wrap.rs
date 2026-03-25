@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), allow(dead_code))]
+
 use std::{cell::Cell, fmt};
 
 pub(crate) struct LineWrap<T: fmt::Display> {

@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs,
     io::{self, Read as _},
 };
@@ -15,6 +16,7 @@ use protobuf::{
 
 use crate::{
     error::{Inspect, InvalidSchema, MultipleTopLevelMessages, NoTopLevelMessages},
+    selection::{self, FieldPath, ProtobufLine},
     tui,
 };
 
@@ -115,8 +117,43 @@ impl Inspector {
         text_format::print_to_string_pretty(&*self.data)
     }
 
+    pub(crate) fn protobuf_lines(&self) -> Vec<ProtobufLine> {
+        selection::protobuf_lines(&self.md, &*self.data)
+    }
+
     pub fn bytes(&self) -> std::result::Result<Vec<u8>, Report<Inspect>> {
         self.data.write_to_bytes_dyn().change_context(Inspect)
+    }
+
+    pub(crate) fn selected_path_for_json_cursor(
+        &self,
+        json: &str,
+        cursor: (usize, usize),
+    ) -> Option<FieldPath> {
+        selection::selected_path_for_json_cursor(&self.md, json, cursor)
+    }
+
+    pub(crate) fn highlighted_byte_indices(
+        &self,
+        selected_path: &[selection::FieldPathSegment],
+    ) -> std::result::Result<BTreeSet<usize>, Report<Inspect>> {
+        let bytes = self.bytes()?;
+        let mut highlighted = selection::highlighted_byte_indices(&self.md, &bytes, selected_path);
+
+        if highlighted.is_empty()
+            && matches!(
+                selected_path.last(),
+                Some(selection::FieldPathSegment::Index(_))
+            )
+        {
+            highlighted = selection::highlighted_byte_indices(
+                &self.md,
+                &bytes,
+                &selected_path[..selected_path.len().saturating_sub(1)],
+            );
+        }
+
+        Ok(highlighted)
     }
 
     pub fn hex_view(&self) -> String {
@@ -411,16 +448,16 @@ fn decode_input(
             if let Ok(text) = std::str::from_utf8(raw_input) {
                 let trimmed = text.trim();
 
-                if looks_like_hex(trimmed) {
-                    if let Ok(decoded) = decode_hex(raw_input) {
-                        return Ok(decoded);
-                    }
+                if looks_like_hex(trimmed)
+                    && let Ok(decoded) = decode_hex(raw_input)
+                {
+                    return Ok(decoded);
                 }
 
-                if looks_like_base64(trimmed) {
-                    if let Ok(decoded) = decode_base64(raw_input) {
-                        return Ok(decoded);
-                    }
+                if looks_like_base64(trimmed)
+                    && let Ok(decoded) = decode_base64(raw_input)
+                {
+                    return Ok(decoded);
                 }
             }
 
@@ -451,10 +488,10 @@ fn decode_hex(raw_input: &[u8]) -> std::result::Result<Vec<u8>, Report<Inspect>>
         .change_context(Inspect)
 }
 
-fn input_as_text<'a>(
-    raw_input: &'a [u8],
+fn input_as_text(
+    raw_input: &[u8],
     format: InputFormat,
-) -> std::result::Result<&'a str, Report<Inspect>> {
+) -> std::result::Result<&str, Report<Inspect>> {
     std::str::from_utf8(raw_input)
         .attach_with(|| format!("Input format: {}", format.as_str()))
         .change_context(Inspect)
@@ -469,7 +506,7 @@ fn strip_ascii_whitespace(text: &str) -> String {
 fn looks_like_hex(text: &str) -> bool {
     let compact = strip_ascii_whitespace(text);
     !compact.is_empty()
-        && compact.len() % 2 == 0
+        && compact.len().is_multiple_of(2)
         && compact.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 

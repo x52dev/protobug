@@ -1,6 +1,7 @@
 pub mod error;
 mod inspector;
 pub mod line_wrap;
+mod selection;
 mod tui;
 
 pub use self::inspector::{
