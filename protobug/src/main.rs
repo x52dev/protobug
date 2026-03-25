@@ -42,8 +42,8 @@ enum Commands {
         input_format: InputFormatArg,
 
         /// Bytes per row shared by the hex and ASCII panes.
-        #[arg(long, default_value_t = 16, value_parser = parse_width)]
-        columns: usize,
+        #[arg(long, value_parser = parse_width)]
+        columns: Option<usize>,
 
         /// Save the current message as pretty JSON when Ctrl-S is pressed.
         #[arg(long)]

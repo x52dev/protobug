@@ -67,15 +67,9 @@ pub struct InspectOptions {
     pub save_targets: SaveTargets,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DisplayOptions {
-    pub columns: usize,
-}
-
-impl Default for DisplayOptions {
-    fn default() -> Self {
-        Self { columns: 16 }
-    }
+    pub columns: Option<usize>,
 }
 
 pub struct Inspector {

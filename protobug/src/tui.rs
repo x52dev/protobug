@@ -51,6 +51,7 @@ pub(crate) struct App<'a> {
     json_editor: TextArea<'a>,
     save_targets: SaveTargets,
     display_options: DisplayOptions,
+    last_byte_pane_width: u16,
     last_status: Option<Status>,
     exit: bool,
 }
@@ -83,6 +84,7 @@ impl App<'_> {
             json_editor,
             save_targets,
             display_options,
+            last_byte_pane_width: 0,
             last_status: None,
             exit: false,
         })
@@ -106,6 +108,8 @@ impl App<'_> {
         let left_layout = Layout::vertical(Constraint::from_fills([1, 1, 1]));
         let [left_area, right_area] = layout.areas(main_area);
         let [top_left_area, middle_left_area, bottom_left_area] = left_layout.areas(left_area);
+        let display_columns = self.effective_columns_for_pane_width(middle_left_area.width);
+        self.last_byte_pane_width = middle_left_area.width;
 
         let json = self.current_json();
         let selected_path = self.current_selected_path(&json);
@@ -123,18 +127,19 @@ impl App<'_> {
                 .borders(Borders::ALL)
                 .border_type(BorderType::Plain),
         );
-        let para_hex = Paragraph::new(self.hex_text(&highlighted_bytes)).block(
+        let para_hex = Paragraph::new(self.hex_text(&highlighted_bytes, display_columns)).block(
             Block::default()
                 .title("Hex")
                 .borders(Borders::ALL)
                 .border_type(BorderType::Plain),
         );
-        let para_ascii = Paragraph::new(self.ascii_text(&highlighted_bytes)).block(
-            Block::default()
-                .title("ASCII")
-                .borders(Borders::ALL)
-                .border_type(BorderType::Plain),
-        );
+        let para_ascii = Paragraph::new(self.ascii_text(&highlighted_bytes, display_columns))
+            .block(
+                Block::default()
+                    .title("ASCII")
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Plain),
+            );
 
         let right_block = Block::default()
             .title("JSON")
@@ -158,7 +163,8 @@ impl App<'_> {
 
         let footer_block = Block::default().borders(Borders::TOP);
         frame.render_widget(
-            Paragraph::new(self.status_line()).style(self.status_style()),
+            Paragraph::new(self.status_line_for_columns(display_columns))
+                .style(self.status_style()),
             footer_block.inner(footer_area),
         );
         frame.render_widget(footer_block, footer_area);
@@ -252,15 +258,19 @@ impl App<'_> {
         }
     }
 
+    #[cfg(test)]
     fn status_line(&self) -> String {
+        self.status_line_for_columns(
+            self.effective_columns_for_pane_width(self.last_byte_pane_width),
+        )
+    }
+
+    fn status_line_for_columns(&self, columns: usize) -> String {
         if let Some(status) = &self.last_status {
             return status.message.clone();
         }
 
-        format!(
-            "Ctrl-C quit | Ctrl-S save | [ ] columns {}",
-            self.display_options.columns,
-        )
+        format!("Ctrl-C quit | Ctrl-S save | [ ] columns {}", columns,)
     }
 
     fn status_style(&self) -> Style {
@@ -301,12 +311,16 @@ impl App<'_> {
         Text::from(lines)
     }
 
-    fn hex_text(&self, highlighted_bytes: &std::collections::BTreeSet<usize>) -> Text<'static> {
+    fn hex_text(
+        &self,
+        highlighted_bytes: &std::collections::BTreeSet<usize>,
+        columns: usize,
+    ) -> Text<'static> {
         match self.inspector.bytes() {
             Ok(bytes) => Text::from(render_byte_lines(
                 &bytes,
                 highlighted_bytes,
-                self.display_options.columns,
+                columns,
                 " ",
                 |byte| format!("{byte:02x}"),
             )),
@@ -314,12 +328,16 @@ impl App<'_> {
         }
     }
 
-    fn ascii_text(&self, highlighted_bytes: &std::collections::BTreeSet<usize>) -> Text<'static> {
+    fn ascii_text(
+        &self,
+        highlighted_bytes: &std::collections::BTreeSet<usize>,
+        columns: usize,
+    ) -> Text<'static> {
         match self.inspector.bytes() {
             Ok(bytes) => Text::from(render_byte_lines(
                 &bytes,
                 highlighted_bytes,
-                self.display_options.columns,
+                columns,
                 "",
                 |byte| match byte {
                     byte if byte.is_ascii_whitespace() => " ".to_owned(),
@@ -332,13 +350,26 @@ impl App<'_> {
     }
 
     fn adjust_columns(&mut self, delta: isize) {
-        self.display_options.columns = adjust_width(self.display_options.columns, delta);
+        let current_columns = self.effective_columns_for_pane_width(self.last_byte_pane_width);
+        self.display_options.columns = Some(adjust_width(current_columns, delta));
         self.last_status = Some(Status {
             kind: StatusKind::Info,
-            message: format!("Display columns set to {}", self.display_options.columns),
+            message: format!(
+                "Display columns set to {}",
+                self.display_options.columns.unwrap_or(current_columns),
+            ),
         });
     }
+
+    fn effective_columns_for_pane_width(&self, pane_width: u16) -> usize {
+        self.display_options
+            .columns
+            .unwrap_or_else(|| auto_columns_for_pane_width(pane_width))
+    }
 }
+
+const COMPACT_COLUMNS: usize = 16;
+const WIDE_COLUMNS: usize = 32;
 
 fn render_byte_lines<F>(
     bytes: &[u8],
@@ -384,6 +415,20 @@ fn adjust_width(width: usize, delta: isize) -> usize {
     } else {
         width.saturating_sub(delta.unsigned_abs()).max(1)
     }
+}
+
+fn auto_columns_for_pane_width(pane_width: u16) -> usize {
+    let inner_width = usize::from(pane_width.saturating_sub(2));
+
+    if hex_line_width(WIDE_COLUMNS) <= inner_width {
+        WIDE_COLUMNS
+    } else {
+        COMPACT_COLUMNS
+    }
+}
+
+fn hex_line_width(columns: usize) -> usize {
+    columns.saturating_mul(2) + columns.saturating_sub(1)
 }
 
 fn highlight_style() -> Style {
@@ -577,8 +622,9 @@ mod tests {
             .inspector
             .highlighted_byte_indices(selected_path.as_ref().unwrap())
             .unwrap();
-        let hex = app.hex_text(&highlighted_bytes);
-        let ascii = app.ascii_text(&highlighted_bytes);
+        let columns = app.effective_columns_for_pane_width(48);
+        let hex = app.hex_text(&highlighted_bytes, columns);
+        let ascii = app.ascii_text(&highlighted_bytes, columns);
 
         let highlighted_hex = highlighted_span_contents(&hex);
         assert!(
@@ -623,12 +669,12 @@ mod tests {
         let app = App::new(
             inspector,
             SaveTargets::default(),
-            DisplayOptions { columns: 8 },
+            DisplayOptions { columns: Some(8) },
         )
         .unwrap();
 
-        let hex = app.hex_text(&Default::default());
-        let ascii = app.ascii_text(&Default::default());
+        let hex = app.hex_text(&Default::default(), 8);
+        let ascii = app.ascii_text(&Default::default(), 8);
 
         assert_eq!(hex.lines.len(), 4);
         assert_eq!(ascii.lines.len(), 4);
@@ -647,12 +693,18 @@ mod tests {
             App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
 
         app.adjust_columns(-8);
-        assert_eq!(app.display_options.columns, 8);
+        assert_eq!(app.display_options.columns, Some(8));
         assert_eq!(app.status_line(), "Display columns set to 8");
 
         app.adjust_columns(4);
-        assert_eq!(app.display_options.columns, 12);
+        assert_eq!(app.display_options.columns, Some(12));
         assert_eq!(app.status_line(), "Display columns set to 12");
+    }
+
+    #[test]
+    fn auto_columns_expand_when_pane_is_wide_enough() {
+        assert_eq!(auto_columns_for_pane_width(97), 32);
+        assert_eq!(auto_columns_for_pane_width(96), 16);
     }
 
     fn move_cursor_to(app: &mut App<'_>, needle: &str) {
