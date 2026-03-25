@@ -22,6 +22,10 @@ fmt:
     fd --hidden --extension=proto --exec-batch eclint -fix
     cargo +nightly fmt
 
+# Run protobug.
+run *args:
+    cargo run -p=protobug -- {{ args }}
+
 # Lint workspace.
 clippy:
     cargo clippy --workspace --no-default-features
