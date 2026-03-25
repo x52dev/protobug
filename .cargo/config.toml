@@ -1,0 +1,7 @@
+[target.aarch64-apple-darwin]
+# Force the system linker on macOS. The default linker selected by the beta
+# toolchain here emits Mach-O binaries without LC_UUID, which dyld rejects.
+linker = "cc"
+
+[target.x86_64-apple-darwin]
+linker = "cc"
