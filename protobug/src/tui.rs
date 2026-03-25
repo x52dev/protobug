@@ -127,20 +127,29 @@ impl App<'_> {
             .as_ref()
             .and_then(|path| self.inspector.highlighted_byte_indices(path).ok())
             .unwrap_or_default();
+        let protobuf_text = self.protobuf_text(selected_path.as_ref());
+        let protobuf_scroll = self.protobuf_scroll_offset(&protobuf_text, top_left_area.height);
+        let byte_scroll =
+            self.byte_scroll_offset(&highlighted_bytes, display_columns, middle_left_area.height);
 
-        let para_tf = Paragraph::new(self.protobuf_text(selected_path.as_ref())).block(
-            Block::default()
-                .title("Protobuf")
-                .borders(Borders::ALL)
-                .border_type(BorderType::Plain),
-        );
-        let para_hex = Paragraph::new(self.hex_text(&highlighted_bytes, display_columns)).block(
-            Block::default()
-                .title("Hex")
-                .borders(Borders::ALL)
-                .border_type(BorderType::Plain),
-        );
+        let para_tf = Paragraph::new(protobuf_text)
+            .scroll((protobuf_scroll, 0))
+            .block(
+                Block::default()
+                    .title("Protobuf")
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Plain),
+            );
+        let para_hex = Paragraph::new(self.hex_text(&highlighted_bytes, display_columns))
+            .block(
+                Block::default()
+                    .title("Hex")
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Plain),
+            )
+            .scroll((byte_scroll, 0));
         let para_ascii = Paragraph::new(self.ascii_text(&highlighted_bytes, display_columns))
+            .scroll((byte_scroll, 0))
             .block(
                 Block::default()
                     .title("ASCII")
@@ -346,6 +355,18 @@ impl App<'_> {
         Text::from(lines)
     }
 
+    fn protobuf_scroll_offset(&self, text: &Text<'_>, area_height: u16) -> u16 {
+        let Some(line_index) = text.lines.iter().position(|line| {
+            line.spans.iter().any(|span| {
+                span.style.bg == Some(Color::Blue) && span.style.fg == Some(Color::White)
+            })
+        }) else {
+            return 0;
+        };
+
+        scroll_offset_for_line(line_index, area_height)
+    }
+
     fn hex_text(
         &self,
         highlighted_bytes: &std::collections::BTreeSet<usize>,
@@ -400,6 +421,19 @@ impl App<'_> {
         self.display_options
             .columns
             .unwrap_or_else(|| auto_columns_for_pane_width(pane_width))
+    }
+
+    fn byte_scroll_offset(
+        &self,
+        highlighted_bytes: &std::collections::BTreeSet<usize>,
+        columns: usize,
+        area_height: u16,
+    ) -> u16 {
+        let Some(byte_index) = highlighted_bytes.iter().next().copied() else {
+            return 0;
+        };
+
+        scroll_offset_for_line(byte_index / columns.max(1), area_height)
     }
 
     fn inline_hints(
@@ -518,6 +552,12 @@ fn adjust_width(width: usize, delta: isize) -> usize {
     } else {
         width.saturating_sub(delta.unsigned_abs()).max(1)
     }
+}
+
+fn scroll_offset_for_line(line_index: usize, area_height: u16) -> u16 {
+    let visible_lines = usize::from(area_height.saturating_sub(2)).max(1);
+    let top_line = line_index.saturating_sub(visible_lines.saturating_sub(1));
+    top_line.min(u16::MAX as usize) as u16
 }
 
 fn auto_columns_for_pane_width(pane_width: u16) -> usize {
@@ -784,6 +824,36 @@ mod tests {
     }
 
     #[test]
+    fn selected_content_scrolls_into_view() {
+        let inspector = load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            &sample_bytes(),
+            InputFormat::Binary,
+        )
+        .unwrap();
+        let mut app = App::new(
+            inspector,
+            SaveTargets::default(),
+            DisplayOptions { columns: Some(4) },
+        )
+        .unwrap();
+
+        move_cursor_to(&mut app, "\"y\": 100");
+
+        let json = app.current_json();
+        let selected_path = app.current_selected_path(&json).unwrap();
+        let protobuf_text = app.protobuf_text(Some(&selected_path));
+        let highlighted_bytes = app
+            .inspector
+            .highlighted_byte_indices(&selected_path)
+            .unwrap();
+
+        assert!(app.protobuf_scroll_offset(&protobuf_text, 4) > 0);
+        assert!(app.byte_scroll_offset(&highlighted_bytes, 4, 4) > 0);
+    }
+
+    #[test]
     fn render_respects_shared_display_columns() {
         let inspector = load_inspector(
             schema_path().as_ref(),
@@ -831,6 +901,13 @@ mod tests {
     fn auto_columns_expand_when_pane_is_wide_enough() {
         assert_eq!(auto_columns_for_pane_width(97), 32);
         assert_eq!(auto_columns_for_pane_width(96), 16);
+    }
+
+    #[test]
+    fn scroll_offset_keeps_highlighted_line_visible() {
+        assert_eq!(scroll_offset_for_line(0, 4), 0);
+        assert_eq!(scroll_offset_for_line(3, 4), 2);
+        assert_eq!(scroll_offset_for_line(5, 5), 3);
     }
 
     fn move_cursor_to(app: &mut App<'_>, needle: &str) {
