@@ -1,6 +1,7 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-23.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    flake-parts.url = "github:hercules-ci/flake-parts";
   };
 
   outputs = inputs@{ flake-parts, ... }:
@@ -21,9 +22,6 @@
             pkgs.nodePackages.prettier
           ] ++ lib.optional pkgs.stdenv.isDarwin [
             pkgs.pkgsBuildHost.libiconv
-            pkgs.pkgsBuildHost.darwin.apple_sdk.frameworks.Security
-            pkgs.pkgsBuildHost.darwin.apple_sdk.frameworks.CoreFoundation
-            pkgs.pkgsBuildHost.darwin.apple_sdk.frameworks.SystemConfiguration
           ];
         };
       };
