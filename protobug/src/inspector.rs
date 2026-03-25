@@ -69,16 +69,12 @@ pub struct InspectOptions {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DisplayOptions {
-    pub hex_width: usize,
-    pub ascii_width: usize,
+    pub columns: usize,
 }
 
 impl Default for DisplayOptions {
     fn default() -> Self {
-        Self {
-            hex_width: 16,
-            ascii_width: 16,
-        }
+        Self { columns: 16 }
     }
 }
 

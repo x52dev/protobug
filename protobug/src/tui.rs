@@ -196,7 +196,7 @@ impl App<'_> {
                     ..
                 },
             ) if ev.kind == event::KeyEventKind::Press => {
-                self.adjust_hex_width(-1);
+                self.adjust_columns(-1);
             }
 
             event::Event::Key(
@@ -205,25 +205,7 @@ impl App<'_> {
                     ..
                 },
             ) if ev.kind == event::KeyEventKind::Press => {
-                self.adjust_hex_width(1);
-            }
-
-            event::Event::Key(
-                ev @ KeyEvent {
-                    code: KeyCode::Char('{'),
-                    ..
-                },
-            ) if ev.kind == event::KeyEventKind::Press => {
-                self.adjust_ascii_width(-1);
-            }
-
-            event::Event::Key(
-                ev @ KeyEvent {
-                    code: KeyCode::Char('}'),
-                    ..
-                },
-            ) if ev.kind == event::KeyEventKind::Press => {
-                self.adjust_ascii_width(1);
+                self.adjust_columns(1);
             }
 
             input => {
@@ -276,8 +258,8 @@ impl App<'_> {
         }
 
         format!(
-            "Ctrl-C quit | Ctrl-S save | [ ] hex {} | {{ }} ascii {}",
-            self.display_options.hex_width, self.display_options.ascii_width,
+            "Ctrl-C quit | Ctrl-S save | [ ] columns {}",
+            self.display_options.columns,
         )
     }
 
@@ -324,7 +306,7 @@ impl App<'_> {
             Ok(bytes) => Text::from(render_byte_lines(
                 &bytes,
                 highlighted_bytes,
-                self.display_options.hex_width,
+                self.display_options.columns,
                 " ",
                 |byte| format!("{byte:02x}"),
             )),
@@ -337,7 +319,7 @@ impl App<'_> {
             Ok(bytes) => Text::from(render_byte_lines(
                 &bytes,
                 highlighted_bytes,
-                self.display_options.ascii_width,
+                self.display_options.columns,
                 "",
                 |byte| match byte {
                     byte if byte.is_ascii_whitespace() => " ".to_owned(),
@@ -349,19 +331,11 @@ impl App<'_> {
         }
     }
 
-    fn adjust_hex_width(&mut self, delta: isize) {
-        self.display_options.hex_width = adjust_width(self.display_options.hex_width, delta);
+    fn adjust_columns(&mut self, delta: isize) {
+        self.display_options.columns = adjust_width(self.display_options.columns, delta);
         self.last_status = Some(Status {
             kind: StatusKind::Info,
-            message: format!("Hex width set to {}", self.display_options.hex_width),
-        });
-    }
-
-    fn adjust_ascii_width(&mut self, delta: isize) {
-        self.display_options.ascii_width = adjust_width(self.display_options.ascii_width, delta);
-        self.last_status = Some(Status {
-            kind: StatusKind::Info,
-            message: format!("ASCII width set to {}", self.display_options.ascii_width),
+            message: format!("Display columns set to {}", self.display_options.columns),
         });
     }
 }
@@ -638,7 +612,7 @@ mod tests {
     }
 
     #[test]
-    fn render_respects_custom_hex_and_ascii_widths() {
+    fn render_respects_shared_display_columns() {
         let inspector = load_inspector(
             schema_path().as_ref(),
             Some("SystemEvent"),
@@ -649,10 +623,7 @@ mod tests {
         let app = App::new(
             inspector,
             SaveTargets::default(),
-            DisplayOptions {
-                hex_width: 8,
-                ascii_width: 8,
-            },
+            DisplayOptions { columns: 8 },
         )
         .unwrap();
 
@@ -664,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn adjusting_width_updates_status_message() {
+    fn adjusting_columns_updates_status_message() {
         let inspector = load_inspector(
             schema_path().as_ref(),
             Some("SystemEvent"),
@@ -675,13 +646,13 @@ mod tests {
         let mut app =
             App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
 
-        app.adjust_hex_width(-8);
-        assert_eq!(app.display_options.hex_width, 8);
-        assert_eq!(app.status_line(), "Hex width set to 8");
+        app.adjust_columns(-8);
+        assert_eq!(app.display_options.columns, 8);
+        assert_eq!(app.status_line(), "Display columns set to 8");
 
-        app.adjust_ascii_width(4);
-        assert_eq!(app.display_options.ascii_width, 20);
-        assert_eq!(app.status_line(), "ASCII width set to 20");
+        app.adjust_columns(4);
+        assert_eq!(app.display_options.columns, 12);
+        assert_eq!(app.status_line(), "Display columns set to 12");
     }
 
     fn move_cursor_to(app: &mut App<'_>, needle: &str) {

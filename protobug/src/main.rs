@@ -41,13 +41,9 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = InputFormatArg::Auto)]
         input_format: InputFormatArg,
 
-        /// Bytes per row in the hex pane.
+        /// Bytes per row shared by the hex and ASCII panes.
         #[arg(long, default_value_t = 16, value_parser = parse_width)]
-        hex_width: usize,
-
-        /// Bytes per row in the ASCII pane.
-        #[arg(long, default_value_t = 16, value_parser = parse_width)]
-        ascii_width: usize,
+        columns: usize,
 
         /// Save the current message as pretty JSON when Ctrl-S is pressed.
         #[arg(long)]
@@ -118,8 +114,7 @@ fn main() -> std::result::Result<(), Report<ProtobugError>> {
             message,
             file,
             input_format,
-            hex_width,
-            ascii_width,
+            columns,
             save_json,
             save_bin,
             save_hex,
@@ -130,10 +125,7 @@ fn main() -> std::result::Result<(), Report<ProtobugError>> {
                 message,
                 file,
                 input_format: input_format.into(),
-                display_options: DisplayOptions {
-                    hex_width,
-                    ascii_width,
-                },
+                display_options: DisplayOptions { columns },
                 save_targets: SaveTargets {
                     json: save_json,
                     base64: save_base64,
