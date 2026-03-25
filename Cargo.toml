@@ -4,15 +4,15 @@ members = ["./protobug", "./protogen"]
 
 [workspace.package]
 authors = ["Rob Ede <robjtede@icloud.com>"]
-edition = "2021"
-rust-version = "1.86"
+edition = "2024"
+rust-version = "1.94"
 
 [workspace.dependencies]
 base64 = "0.22"
 camino = "1"
 clap = { version = "4" }
 crossterm = "0.29"
-error-stack = "0.5"
+error-stack = "0.6"
 hex = "0.4"
 protobuf = "3"
 protobuf-codegen = "3"
