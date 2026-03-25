@@ -5,6 +5,7 @@ members = ["./protobug", "./protogen"]
 [workspace.package]
 authors = ["Rob Ede <robjtede@icloud.com>"]
 edition = "2024"
+license = "MIT OR Apache-2.0"
 rust-version = "1.94"
 
 [workspace.dependencies]
