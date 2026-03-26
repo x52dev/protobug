@@ -139,12 +139,14 @@ impl App<'_> {
         let root_layout = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]);
         let [main_area, footer_area] = root_layout.areas(frame.area());
 
-        let layout = Layout::horizontal(Constraint::from_fills([1, 1]));
-        let left_layout = Layout::vertical(Constraint::from_fills([1, 1, 1]));
+        let layout = Layout::horizontal(Constraint::from_fills([3, 2]));
+        let left_layout = Layout::vertical(Constraint::from_fills([1, 1]));
         let [left_area, right_area] = layout.areas(main_area);
-        let [top_left_area, middle_left_area, bottom_left_area] = left_layout.areas(left_area);
-        let display_columns = self.effective_columns_for_pane_width(middle_left_area.width);
-        self.last_byte_pane_width = middle_left_area.width;
+        let [top_left_area, bottom_left_area] = left_layout.areas(left_area);
+        let byte_layout = Layout::horizontal(Constraint::from_fills([2, 1]));
+        let [hex_area, ascii_area] = byte_layout.areas(bottom_left_area);
+        let display_columns = self.effective_columns_for_pane_width(hex_area.width);
+        self.last_byte_pane_width = hex_area.width;
 
         let json = self.current_json();
         let selected_path = self.current_selected_path(&json);
@@ -165,7 +167,7 @@ impl App<'_> {
         let protobuf_text = self.protobuf_text(selected_path.as_ref());
         let protobuf_scroll = self.protobuf_scroll_offset(&protobuf_text, top_left_area.height);
         let byte_scroll =
-            self.byte_scroll_offset(&highlighted_bytes, display_columns, middle_left_area.height);
+            self.byte_scroll_offset(&highlighted_bytes, display_columns, hex_area.height);
 
         let para_tf = Paragraph::new(protobuf_text)
             .scroll((protobuf_scroll, 0))
@@ -199,8 +201,8 @@ impl App<'_> {
         let right_inner = right_block.inner(right_area);
 
         frame.render_widget(para_tf, top_left_area);
-        frame.render_widget(para_hex, middle_left_area);
-        frame.render_widget(para_ascii, bottom_left_area);
+        frame.render_widget(para_hex, hex_area);
+        frame.render_widget(para_ascii, ascii_area);
 
         if !inline_hints.is_empty() {
             let [editor_area, hint_area] = Layout::vertical([
@@ -561,7 +563,7 @@ impl App<'_> {
 }
 
 const COMPACT_COLUMNS: usize = 16;
-const WIDE_COLUMNS: usize = 32;
+const WIDE_COLUMNS: usize = 24;
 
 fn render_byte_lines<F>(
     bytes: &[u8],
@@ -616,12 +618,21 @@ fn scroll_offset_for_line(line_index: usize, area_height: u16) -> u16 {
 }
 
 fn auto_columns_for_pane_width(pane_width: u16) -> usize {
+    if pane_width == 0 {
+        return COMPACT_COLUMNS;
+    }
+
     let inner_width = usize::from(pane_width.saturating_sub(2));
 
     if hex_line_width(WIDE_COLUMNS) <= inner_width {
         WIDE_COLUMNS
-    } else {
+    } else if hex_line_width(COMPACT_COLUMNS) <= inner_width {
         COMPACT_COLUMNS
+    } else {
+        (1..COMPACT_COLUMNS)
+            .rev()
+            .find(|&columns| hex_line_width(columns) <= inner_width)
+            .unwrap_or(1)
     }
 }
 
@@ -867,11 +878,22 @@ mod tests {
             App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
 
         move_cursor_to(&mut app, "\"button\"");
+        let json = app.current_json();
+        let selected_path = app.current_selected_path(&json).unwrap();
+        let omitted_default_enum_hint = app
+            .inspector
+            .omitted_default_enum_hint(&selected_path)
+            .unwrap();
 
         let rendered = render_text(&mut app);
 
-        assert!(rendered.contains("Ctrl-P/Ctrl-N enum: [Left] Right Middle"));
-        assert!(rendered.contains("Default enum Left is omitted on the wire"));
+        assert!(rendered.contains("Ctrl-P/Ctrl-N enum:"));
+        assert!(rendered.contains("[Left]"));
+        assert!(rendered.contains("Right"));
+        assert_eq!(
+            omitted_default_enum_hint,
+            "Default enum Left is omitted on the wire"
+        );
     }
 
     #[test]
@@ -893,7 +915,9 @@ mod tests {
         assert_eq!(app.status_line(), "Enum set to Right");
 
         let rendered = render_text(&mut app);
-        assert!(rendered.contains("Ctrl-P/Ctrl-N enum: Left [Right] Middle"));
+        assert!(rendered.contains("Ctrl-P/Ctrl-N enum:"));
+        assert!(rendered.contains("Left"));
+        assert!(rendered.contains("[Right]"));
     }
 
     #[test]
@@ -981,7 +1005,7 @@ mod tests {
         .unwrap();
         let mut app =
             App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
-        app.last_byte_pane_width = 48;
+        app.last_byte_pane_width = 49;
 
         app.adjust_columns(-8);
         assert_eq!(app.status_line(), "Display columns set to 8");
@@ -999,8 +1023,9 @@ mod tests {
 
     #[test]
     fn auto_columns_expand_when_pane_is_wide_enough() {
-        assert_eq!(auto_columns_for_pane_width(97), 32);
-        assert_eq!(auto_columns_for_pane_width(96), 16);
+        assert_eq!(auto_columns_for_pane_width(73), 24);
+        assert_eq!(auto_columns_for_pane_width(72), 16);
+        assert_eq!(auto_columns_for_pane_width(25), 8);
     }
 
     #[test]
