@@ -63,7 +63,7 @@ pub(crate) struct App<'a> {
 struct Status {
     kind: StatusKind,
     message: String,
-    expires_at: Option<Instant>,
+    expires_at: Instant,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -72,33 +72,23 @@ enum StatusKind {
     Error,
 }
 
-const TRANSIENT_STATUS_DURATION: Duration = Duration::from_secs(2);
+const STATUS_DURATION: Duration = Duration::from_secs(4);
 
 impl Status {
-    fn persistent(kind: StatusKind, message: impl Into<String>) -> Self {
+    fn new(kind: StatusKind, message: impl Into<String>) -> Self {
         Self {
             kind,
             message: message.into(),
-            expires_at: None,
-        }
-    }
-
-    fn transient(kind: StatusKind, message: impl Into<String>, duration: Duration) -> Self {
-        Self {
-            kind,
-            message: message.into(),
-            expires_at: Some(Instant::now() + duration),
+            expires_at: Instant::now() + STATUS_DURATION,
         }
     }
 
     fn is_expired(&self) -> bool {
-        self.expires_at
-            .is_some_and(|expires_at| Instant::now() >= expires_at)
+        Instant::now() >= self.expires_at
     }
 
-    fn timeout_remaining(&self) -> Option<Duration> {
-        self.expires_at
-            .map(|expires_at| expires_at.saturating_duration_since(Instant::now()))
+    fn timeout_remaining(&self) -> Duration {
+        self.expires_at.saturating_duration_since(Instant::now())
     }
 }
 
@@ -308,10 +298,7 @@ impl App<'_> {
                 if self.json_editor.input(input) {
                     let json = self.json_editor.lines().join("\n");
                     if let Err(error) = self.inspector.apply_json(&json) {
-                        self.last_status = Some(Status::persistent(
-                            StatusKind::Error,
-                            format!("Parse error: {error}"),
-                        ));
+                        self.show_error(format!("Parse error: {error}"));
                     } else if matches!(
                         self.visible_status().map(|status| status.kind),
                         Some(StatusKind::Error)
@@ -334,13 +321,10 @@ impl App<'_> {
                     .collect::<Vec<_>>()
                     .join(", ");
 
-                self.last_status = Some(Status::persistent(
-                    StatusKind::Info,
-                    format!("Saved outputs: {message}"),
-                ));
+                self.show_info(format!("Saved outputs: {message}"));
             }
             Err(error) => {
-                self.last_status = Some(Status::persistent(StatusKind::Error, error.to_string()));
+                self.show_error(error.to_string());
             }
         }
     }
@@ -381,7 +365,19 @@ impl App<'_> {
     }
 
     fn status_timeout(&self) -> Option<Duration> {
-        self.visible_status().and_then(Status::timeout_remaining)
+        self.visible_status().map(Status::timeout_remaining)
+    }
+
+    fn show_status(&mut self, kind: StatusKind, message: impl Into<String>) {
+        self.last_status = Some(Status::new(kind, message));
+    }
+
+    fn show_info(&mut self, message: impl Into<String>) {
+        self.show_status(StatusKind::Info, message);
+    }
+
+    fn show_error(&mut self, message: impl Into<String>) {
+        self.show_status(StatusKind::Error, message);
     }
 
     fn current_json(&self) -> String {
@@ -467,13 +463,9 @@ impl App<'_> {
     fn adjust_columns(&mut self, delta: isize) {
         let current_columns = self.effective_columns_for_pane_width(self.last_byte_pane_width);
         self.display_options.columns = Some(adjust_width(current_columns, delta));
-        self.last_status = Some(Status::transient(
-            StatusKind::Info,
-            format!(
-                "Display columns set to {}",
-                self.display_options.columns.unwrap_or(current_columns),
-            ),
-            TRANSIENT_STATUS_DURATION,
+        self.show_info(format!(
+            "Display columns set to {}",
+            self.display_options.columns.unwrap_or(current_columns),
         ));
     }
 
@@ -530,18 +522,12 @@ impl App<'_> {
     fn cycle_selected_enum(&mut self, delta: isize) {
         let json = self.current_json();
         let Some(selected_path) = self.current_selected_path(&json) else {
-            self.last_status = Some(Status::persistent(
-                StatusKind::Info,
-                "Move the cursor onto an enum value to switch variants",
-            ));
+            self.show_info("Move the cursor onto an enum value to switch variants");
             return;
         };
 
         let Some(variant) = self.inspector.cycle_enum_variant(&selected_path, delta) else {
-            self.last_status = Some(Status::persistent(
-                StatusKind::Info,
-                "Move the cursor onto an enum value to switch variants",
-            ));
+            self.show_info("Move the cursor onto an enum value to switch variants");
             return;
         };
 
@@ -550,13 +536,10 @@ impl App<'_> {
                 let cursor = self.json_editor.cursor();
                 self.json_editor
                     .set_lines(json.lines().map(ToOwned::to_owned).collect(), cursor);
-                self.last_status = Some(Status::persistent(
-                    StatusKind::Info,
-                    format!("Enum set to {variant}"),
-                ));
+                self.show_info(format!("Enum set to {variant}"));
             }
             Err(error) => {
-                self.last_status = Some(Status::persistent(StatusKind::Error, error.to_string()));
+                self.show_error(error.to_string());
             }
         }
     }
@@ -770,7 +753,7 @@ mod tests {
         .unwrap();
         let mut app =
             App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
-        app.last_status = Some(Status::persistent(
+        app.last_status = Some(Status::new(
             StatusKind::Error,
             "Parse error: expected value",
         ));
@@ -1010,7 +993,7 @@ mod tests {
         app.adjust_columns(-8);
         assert_eq!(app.status_line(), "Display columns set to 8");
 
-        app.last_status.as_mut().unwrap().expires_at = Some(Instant::now());
+        app.last_status.as_mut().unwrap().expires_at = Instant::now();
 
         assert_eq!(
             app.status_line(),
