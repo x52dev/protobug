@@ -1,6 +1,6 @@
 [package]
 name = "protobug"
-version = "0.1.0"
+version = "0.1.1"
 authors.workspace = true
 description = "Interactive terminal debugger for protobuf payloads"
 edition.workspace = true
