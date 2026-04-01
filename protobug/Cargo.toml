@@ -1,10 +1,13 @@
 [package]
 name = "protobug"
 version = "0.1.2"
-authors.workspace = true
 description = "Interactive terminal debugger for protobuf payloads"
-edition.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
 license.workspace = true
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

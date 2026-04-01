@@ -4,8 +4,11 @@ members = ["./protobug", "./protogen"]
 
 [workspace.package]
 authors = ["Rob Ede <robjtede@icloud.com>"]
-edition = "2024"
+keywords = ["protobuf", "debugger", "terminal", "cli", "protobug"]
+categories = ["development-tools::debugging"]
+repository = "https://github.com/robjtede/protobug"
 license = "MIT OR Apache-2.0"
+edition = "2024"
 rust-version = "1.94"
 
 [workspace.dependencies]
