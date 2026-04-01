@@ -8,6 +8,11 @@ license.workspace = true
 rust-version.workspace = true
 build = "build.rs"
 
+[package.metadata.cargo-machete]
+ignored = [
+  "protobuf-codegen", # used in build script
+]
+
 [dependencies]
 base64.workspace = true
 hex.workspace = true
