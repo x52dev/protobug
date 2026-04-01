@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.1.3
+
+
 - Significantly improve enum support.
 
 ## 0.1.2
