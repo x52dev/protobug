@@ -2,14 +2,15 @@
 
 ## Unreleased
 
+- Significantly improve enum support.
+
 ## 0.1.2
 
+- No significant changes since 0.1.1.
 
 ## 0.1.1
 
-### Features
-
-- Rebalance inspector layout
+- Rebalance inspector layout.
 
 ## 0.1.0
 
