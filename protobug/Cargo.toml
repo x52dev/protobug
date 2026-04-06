@@ -28,7 +28,7 @@ tui-textarea = { package = "tui-textarea-2", version = "0.10.2" }
 
 [dev-dependencies]
 indoc = "2"
-insta = "1.47.1"
+insta = "1.47.2"
 pretty_assertions = "1"
 protogen = { path = "../protogen" }
 tempfile = "3"
