@@ -1,8 +1,9 @@
 use base64::Engine as _;
 use error_stack::{Report, ResultExt as _};
 use jaq_core::{
-    Ctx,
+    Ctx, Vars, data,
     load::{Arena, File, Loader},
+    unwrap_valr,
 };
 use jaq_json::Val as JaqVal;
 
@@ -46,21 +47,32 @@ pub(crate) fn apply_json_filter(
     let input = serde_json::from_str::<serde_json::Value>(json)
         .attach("Input format: json")
         .change_context(Inspect)?;
+    let input = serde_json::from_value::<JaqVal>(input)
+        .attach("Input format: json")
+        .change_context(Inspect)?;
     let program = File {
         code: filter,
         path: (),
     };
-    let loader = Loader::new(jaq_std::defs().chain(jaq_json::defs()));
+    let loader = Loader::new(
+        jaq_core::defs()
+            .chain(jaq_std::defs())
+            .chain(jaq_json::defs()),
+    );
     let arena = Arena::default();
     let modules = loader
         .load(&arena, program)
         .map_err(|errors| Report::new(Inspect).attach(format!("Invalid filter: {errors:?}")))?;
     let filter = jaq_core::Compiler::default()
-        .with_funs(jaq_std::funs().chain(jaq_json::funs()))
+        .with_funs(
+            jaq_core::funs()
+                .chain(jaq_std::funs())
+                .chain(jaq_json::funs()),
+        )
         .compile(modules)
         .map_err(|errors| Report::new(Inspect).attach(format!("Invalid filter: {errors:?}")))?;
-    let inputs = jaq_core::RcIter::new(core::iter::empty());
-    let mut output = filter.run((Ctx::new([], &inputs), JaqVal::from(input)));
+    let ctx = Ctx::<data::JustLut<JaqVal>>::new(&filter.lut, Vars::new([]));
+    let mut output = filter.id.run((ctx, input)).map(unwrap_valr);
     let first = output
         .next()
         .transpose()

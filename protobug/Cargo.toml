@@ -20,7 +20,7 @@ derive_more = { workspace = true, features = ["display", "error"] }
 error-stack = { workspace = true, features = ["anyhow"] }
 hex = { workspace = true }
 jaq-core = { workspace = true }
-jaq-json = { workspace = true, features = ["serde_json"] }
+jaq-json = { workspace = true, features = ["serde"] }
 jaq-std = { workspace = true }
 protobuf = { workspace = true }
 protobuf-json-mapping = { workspace = true }
