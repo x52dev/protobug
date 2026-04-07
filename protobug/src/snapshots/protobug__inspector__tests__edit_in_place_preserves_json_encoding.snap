@@ -1,0 +1,16 @@
+---
+source: protobug/src/inspector.rs
+expression: written
+---
+{
+  "click": {
+    "button": "Left",
+    "x": 100,
+    "y": 42
+  },
+  "reason": "user clicked",
+  "timestamp": {
+    "nanos": 123,
+    "seconds": "1234567"
+  }
+}

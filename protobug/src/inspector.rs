@@ -70,6 +70,7 @@ pub struct InspectOptions {
     pub message: Option<String>,
     pub file: Option<Utf8PathBuf>,
     pub input_format: InputFormat,
+    pub multiple: bool,
     pub display_options: DisplayOptions,
     pub save_targets: SaveTargets,
 }
@@ -79,7 +80,14 @@ pub struct EditOptions {
     pub schema: Utf8PathBuf,
     pub message: Option<String>,
     pub file: Option<Utf8PathBuf>,
+    pub input_format: InputFormat,
     pub filter: Option<String>,
+    pub multiple: bool,
+}
+
+struct EditedMessage {
+    inspector: Inspector,
+    source_format: InputFormat,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -291,33 +299,117 @@ impl Inspector {
 pub fn run_inspect(options: InspectOptions) -> std::result::Result<(), Report<Inspect>> {
     let save_targets = options.save_targets.clone();
     let display_options = options.display_options;
-    let inspector = inspect(options)?;
+    let inspectors = inspect(options)?;
 
     let mut terminal = tui::Session::new().change_context(Inspect)?;
     let mut app =
-        tui::App::new(inspector, save_targets, display_options).change_context(Inspect)?;
+        tui::App::new(inspectors, save_targets, display_options).change_context(Inspect)?;
     app.run(terminal.terminal_mut()).change_context(Inspect)?;
 
     Ok(())
 }
 
 pub fn inspect_to_json(options: InspectOptions) -> std::result::Result<String, Report<Inspect>> {
-    inspect(options)?.canonical_json()
+    inspect_one(options)?.canonical_json()
 }
 
 pub fn inspect_to_bytes(options: InspectOptions) -> std::result::Result<Vec<u8>, Report<Inspect>> {
-    inspect(options)?.bytes()
+    inspect_one(options)?.bytes()
 }
 
 pub fn edit_to_json(options: EditOptions) -> std::result::Result<String, Report<Inspect>> {
-    edit(options)?.canonical_json()
+    edit(options)?.inspector.canonical_json()
 }
 
 pub fn edit_to_bytes(options: EditOptions) -> std::result::Result<Vec<u8>, Report<Inspect>> {
-    edit(options)?.bytes()
+    edit(options)?.inspector.bytes()
 }
 
-fn inspect(options: InspectOptions) -> std::result::Result<Inspector, Report<Inspect>> {
+pub fn edit_to_json_lines(options: EditOptions) -> std::result::Result<String, Report<Inspect>> {
+    let (edited, had_trailing_newline) = edit_multiple(options)?;
+    let lines = edited
+        .into_iter()
+        .map(|edited| compact_json(&edited.inspector))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(join_lines(lines, had_trailing_newline))
+}
+
+pub fn edit_to_encoded_lines(
+    options: EditOptions,
+    output_format: InputFormat,
+) -> std::result::Result<String, Report<Inspect>> {
+    let (edited, had_trailing_newline) = edit_multiple(options)?;
+    let lines = edited
+        .into_iter()
+        .map(|edited| encode_line_output(&edited.inspector, output_format))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(join_lines(lines, had_trailing_newline))
+}
+
+pub fn edit_in_place(options: EditOptions) -> std::result::Result<(), Report<Inspect>> {
+    let path = options
+        .file
+        .clone()
+        .ok_or_else(|| Report::new(Inspect).attach("`edit --in-place` requires `--file <path>`"))?;
+
+    if path.as_str() == "-" {
+        return Err(Report::new(Inspect)
+            .attach("`edit --in-place` does not support stdin; pass a file path instead"));
+    }
+
+    if options.multiple {
+        let output_format = match options.input_format {
+            InputFormat::Base64 => InputFormat::Base64,
+            InputFormat::Hex => InputFormat::Hex,
+            InputFormat::Auto => {
+                return Err(Report::new(Inspect).attach(
+                    "`edit --multiple --in-place` requires `--input-format hex` or `base64`",
+                ));
+            }
+            other => {
+                return Err(Report::new(Inspect).attach(format!(
+                    "`edit --multiple` only supports `hex` or `base64` input, got `{}`",
+                    other.as_str()
+                )));
+            }
+        };
+        let output = edit_to_encoded_lines(options, output_format)?;
+        return fs::write(&path, output)
+            .attach_with(|| format!("Output file: {path}"))
+            .change_context(Inspect);
+    }
+
+    let edited = edit(options)?;
+    let bytes = match edited.source_format {
+        InputFormat::Json => edited.inspector.canonical_json()?.into_bytes(),
+        InputFormat::Base64 => BASE64_STANDARD
+            .encode(edited.inspector.bytes()?)
+            .into_bytes(),
+        InputFormat::Hex => hex::encode(edited.inspector.bytes()?).into_bytes(),
+        InputFormat::Binary => edited.inspector.bytes()?,
+        InputFormat::Auto => unreachable!("edit input format is resolved before serialization"),
+    };
+
+    fs::write(&path, bytes)
+        .attach_with(|| format!("Output file: {path}"))
+        .change_context(Inspect)
+}
+
+fn inspect(options: InspectOptions) -> std::result::Result<Vec<Inspector>, Report<Inspect>> {
+    if options.multiple {
+        return inspect_multiple(options);
+    }
+
+    Ok(vec![inspect_one(options)?])
+}
+
+fn inspect_one(options: InspectOptions) -> std::result::Result<Inspector, Report<Inspect>> {
+    if options.multiple {
+        return Err(Report::new(Inspect).attach(
+            "expected a single payload; multiple payloads require the multi-message inspector path",
+        ));
+    }
+
     let input = read_input(options.file.as_deref())?;
     load_inspector(
         options.schema.as_ref(),
@@ -327,20 +419,136 @@ fn inspect(options: InspectOptions) -> std::result::Result<Inspector, Report<Ins
     )
 }
 
-fn edit(options: EditOptions) -> std::result::Result<Inspector, Report<Inspect>> {
+fn inspect_multiple(
+    options: InspectOptions,
+) -> std::result::Result<Vec<Inspector>, Report<Inspect>> {
+    validate_multiple_input_format(options.input_format)?;
     let input = read_input(options.file.as_deref())?;
-    let json = json_input_as_text(&input)?;
-    let filtered = match options.filter.as_deref() {
-        Some(filter) => apply_json_filter(json, filter)?,
-        None => json.to_owned(),
-    };
+    let text = std::str::from_utf8(&input)
+        .attach("Input format: line-based text")
+        .change_context(Inspect)?;
+    let mut inspectors = Vec::new();
 
-    load_inspector(
+    for line in text.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            return Err(Report::new(Inspect)
+                .attach("`inspect --multiple` does not support empty lines in the input file"));
+        }
+
+        inspectors.push(load_inspector(
+            options.schema.as_ref(),
+            options.message.as_deref(),
+            line.as_bytes(),
+            options.input_format,
+        )?);
+    }
+
+    if inspectors.is_empty() {
+        return Err(Report::new(Inspect)
+            .attach("`inspect --multiple` did not find any payload lines in the input file"));
+    }
+
+    Ok(inspectors)
+}
+
+fn edit(options: EditOptions) -> std::result::Result<EditedMessage, Report<Inspect>> {
+    if options.multiple {
+        return Err(Report::new(Inspect).attach(
+            "`edit` expected a single payload; use the line-based edit helpers for `--multiple`",
+        ));
+    }
+
+    let input = read_input(options.file.as_deref())?;
+    let source_format = resolve_edit_input_format(&input, options.input_format, false)?;
+    let mut inspector = load_inspector(
         options.schema.as_ref(),
         options.message.as_deref(),
-        filtered.as_bytes(),
-        InputFormat::Json,
-    )
+        &input,
+        source_format,
+    )?;
+
+    if let Some(filter) = options.filter.as_deref() {
+        let filtered = apply_json_filter(&inspector.canonical_json()?, filter)?;
+        inspector
+            .apply_json(&filtered)
+            .map_err(|error| Report::new(Inspect).attach(error))?;
+    }
+
+    Ok(EditedMessage {
+        inspector,
+        source_format,
+    })
+}
+
+fn edit_multiple(
+    options: EditOptions,
+) -> std::result::Result<(Vec<EditedMessage>, bool), Report<Inspect>> {
+    validate_multiple_input_format(options.input_format)?;
+    let input = read_input(options.file.as_deref())?;
+    let text = std::str::from_utf8(&input)
+        .attach("Input format: line-based text")
+        .change_context(Inspect)?;
+    let had_trailing_newline = text.ends_with('\n');
+    let source_format = resolve_edit_input_format(&input, options.input_format, true)?;
+    let mut edited = Vec::new();
+
+    for line in text.lines() {
+        let line = line.trim_end_matches('\r');
+
+        if line.is_empty() {
+            return Err(Report::new(Inspect)
+                .attach("`edit --multiple` does not support empty lines in the input file"));
+        }
+        let mut inspector = load_inspector(
+            options.schema.as_ref(),
+            options.message.as_deref(),
+            line.as_bytes(),
+            source_format,
+        )?;
+
+        if let Some(filter) = options.filter.as_deref() {
+            let filtered = apply_json_filter(&inspector.canonical_json()?, filter)?;
+            inspector
+                .apply_json(&filtered)
+                .map_err(|error| Report::new(Inspect).attach(error))?;
+        }
+
+        edited.push(EditedMessage {
+            inspector,
+            source_format,
+        });
+    }
+
+    Ok((edited, had_trailing_newline))
+}
+
+fn compact_json(inspector: &Inspector) -> std::result::Result<String, Report<Inspect>> {
+    let value = serde_json::from_str::<serde_json::Value>(&inspector.canonical_json()?)
+        .change_context(Inspect)?;
+    serde_json::to_string(&value).change_context(Inspect)
+}
+
+fn join_lines(lines: Vec<String>, had_trailing_newline: bool) -> String {
+    let mut output = lines.join("\n");
+    if had_trailing_newline {
+        output.push('\n');
+    }
+    output
+}
+
+fn encode_line_output(
+    inspector: &Inspector,
+    output_format: InputFormat,
+) -> std::result::Result<String, Report<Inspect>> {
+    let bytes = inspector.bytes()?;
+    match output_format {
+        InputFormat::Base64 => Ok(BASE64_STANDARD.encode(bytes)),
+        InputFormat::Hex => Ok(hex::encode(bytes)),
+        InputFormat::Json => compact_json(inspector),
+        InputFormat::Auto | InputFormat::Binary => Err(Report::new(Inspect)
+            .attach("line-based editing only supports json, hex, or base64 output")),
+    }
 }
 
 pub fn validate_schema(
@@ -436,6 +644,47 @@ fn json_input_as_text(raw_input: &[u8]) -> std::result::Result<&str, Report<Insp
     std::str::from_utf8(raw_input)
         .attach("Input format: json")
         .change_context(Inspect)
+}
+
+fn resolve_edit_input_format(
+    raw_input: &[u8],
+    requested: InputFormat,
+    multiple: bool,
+) -> std::result::Result<InputFormat, Report<Inspect>> {
+    Ok(match requested {
+        InputFormat::Auto => {
+            if multiple {
+                return Err(Report::new(Inspect)
+                    .attach("`edit --multiple` requires `--input-format hex` or `base64`"));
+            }
+            if let Ok(json) = json_input_as_text(raw_input)
+                && serde_json::from_str::<serde_json::Value>(json).is_ok()
+            {
+                InputFormat::Json
+            } else if decode_hex(raw_input).is_ok() {
+                InputFormat::Hex
+            } else if decode_base64(raw_input).is_ok() {
+                InputFormat::Base64
+            } else {
+                InputFormat::Binary
+            }
+        }
+        other => other,
+    })
+}
+
+fn validate_multiple_input_format(
+    input_format: InputFormat,
+) -> std::result::Result<(), Report<Inspect>> {
+    match input_format {
+        InputFormat::Base64 | InputFormat::Hex => Ok(()),
+        InputFormat::Auto => Err(Report::new(Inspect)
+            .attach("`edit --multiple` requires `--input-format hex` or `base64`")),
+        other => Err(Report::new(Inspect).attach(format!(
+            "`edit --multiple` only supports `hex` or `base64` input, got `{}`",
+            other.as_str()
+        ))),
+    }
 }
 
 fn apply_json_filter(json: &str, filter: &str) -> std::result::Result<String, Report<Inspect>> {
@@ -1106,14 +1355,249 @@ mod tests {
             schema: schema_path(),
             message: Some("SystemEvent".to_owned()),
             file: Some(input_path),
+            input_format: InputFormat::Json,
             filter: Some(
                 r#".reason = "patched with jaq" | .click.button = "Right" | .click.x = 7 | .click.y = 9 | .timestamp.nanos = 456 | .timestamp.seconds = "1234568""#
                     .to_owned(),
             ),
+            multiple: false,
         })
         .unwrap();
 
         assert_snapshot!(hex::encode(&bytes));
+    }
+
+    #[test]
+    fn edit_binary_input_round_trips_sample_bytes() {
+        let dir = tempdir().unwrap();
+        let input_path = Utf8PathBuf::from_path_buf(dir.path().join("input.bin")).unwrap();
+        fs::write(&input_path, sample_bytes()).unwrap();
+        let bytes = edit_to_bytes(EditOptions {
+            schema: schema_path(),
+            message: Some("SystemEvent".to_owned()),
+            file: Some(input_path),
+            input_format: InputFormat::Binary,
+            filter: None,
+            multiple: false,
+        })
+        .unwrap();
+
+        assert_eq!(bytes, sample_bytes());
+    }
+
+    #[test]
+    fn edit_hex_input_round_trips_sample_bytes() {
+        let dir = tempdir().unwrap();
+        let input_path = Utf8PathBuf::from_path_buf(dir.path().join("input.hex")).unwrap();
+        fs::write(&input_path, hex::encode(sample_bytes())).unwrap();
+        let bytes = edit_to_bytes(EditOptions {
+            schema: schema_path(),
+            message: Some("SystemEvent".to_owned()),
+            file: Some(input_path),
+            input_format: InputFormat::Hex,
+            filter: None,
+            multiple: false,
+        })
+        .unwrap();
+
+        assert_eq!(bytes, sample_bytes());
+    }
+
+    #[test]
+    fn edit_base64_input_round_trips_sample_bytes() {
+        let dir = tempdir().unwrap();
+        let input_path = Utf8PathBuf::from_path_buf(dir.path().join("input.base64")).unwrap();
+        fs::write(&input_path, BASE64_STANDARD.encode(sample_bytes())).unwrap();
+        let bytes = edit_to_bytes(EditOptions {
+            schema: schema_path(),
+            message: Some("SystemEvent".to_owned()),
+            file: Some(input_path),
+            input_format: InputFormat::Base64,
+            filter: None,
+            multiple: false,
+        })
+        .unwrap();
+
+        assert_eq!(bytes, sample_bytes());
+    }
+
+    #[test]
+    fn edit_in_place_preserves_hex_encoding() {
+        let dir = tempdir().unwrap();
+        let input_path = Utf8PathBuf::from_path_buf(dir.path().join("input.hex")).unwrap();
+        fs::write(&input_path, hex::encode(sample_bytes())).unwrap();
+
+        edit_in_place(EditOptions {
+            schema: schema_path(),
+            message: Some("SystemEvent".to_owned()),
+            file: Some(input_path.clone()),
+            input_format: InputFormat::Hex,
+            filter: Some(r#".click.x = 100 | .click.y = 42"#.to_owned()),
+            multiple: false,
+        })
+        .unwrap();
+
+        let written = fs::read_to_string(&input_path).unwrap();
+        assert_snapshot!(written);
+    }
+
+    #[test]
+    fn edit_in_place_preserves_json_encoding() {
+        let dir = tempdir().unwrap();
+        let input_path = Utf8PathBuf::from_path_buf(dir.path().join("input.json")).unwrap();
+        fs::write(&input_path, sample_json()).unwrap();
+
+        edit_in_place(EditOptions {
+            schema: schema_path(),
+            message: Some("SystemEvent".to_owned()),
+            file: Some(input_path.clone()),
+            input_format: InputFormat::Json,
+            filter: Some(r#".click.x = 100 | .click.y = 42"#.to_owned()),
+            multiple: false,
+        })
+        .unwrap();
+
+        let written = fs::read_to_string(&input_path).unwrap();
+        assert_snapshot!(written);
+    }
+
+    #[test]
+    fn edit_multiple_hex_lines_match_snapshot() {
+        let dir = tempdir().unwrap();
+        let input_path = Utf8PathBuf::from_path_buf(dir.path().join("input.hex")).unwrap();
+        let bytes = sample_bytes();
+        let second = bytes.clone();
+        fs::write(
+            &input_path,
+            format!("{}\n{}\n", hex::encode(&bytes), hex::encode(&second)),
+        )
+        .unwrap();
+
+        let output = edit_to_encoded_lines(
+            EditOptions {
+                schema: schema_path(),
+                message: Some("SystemEvent".to_owned()),
+                file: Some(input_path),
+                input_format: InputFormat::Hex,
+                filter: Some(r#".click.x = 100 | .click.y = 42"#.to_owned()),
+                multiple: true,
+            },
+            InputFormat::Hex,
+        )
+        .unwrap();
+
+        assert_snapshot!(output);
+    }
+
+    #[test]
+    fn edit_multiple_base64_to_json_lines_match_snapshot() {
+        let dir = tempdir().unwrap();
+        let input_path = Utf8PathBuf::from_path_buf(dir.path().join("input.base64")).unwrap();
+        let bytes = sample_bytes();
+        let second = bytes.clone();
+        fs::write(
+            &input_path,
+            format!(
+                "{}\n{}\n",
+                BASE64_STANDARD.encode(&bytes),
+                BASE64_STANDARD.encode(&second)
+            ),
+        )
+        .unwrap();
+
+        let output = edit_to_json_lines(EditOptions {
+            schema: schema_path(),
+            message: Some("SystemEvent".to_owned()),
+            file: Some(input_path),
+            input_format: InputFormat::Base64,
+            filter: Some(r#".click.x = 100 | .click.y = 42"#.to_owned()),
+            multiple: true,
+        })
+        .unwrap();
+
+        assert_snapshot!(output);
+    }
+
+    #[test]
+    fn edit_in_place_preserves_multiple_base64_encoding() {
+        let dir = tempdir().unwrap();
+        let input_path = Utf8PathBuf::from_path_buf(dir.path().join("input.base64")).unwrap();
+        let bytes = sample_bytes();
+        let second = bytes.clone();
+        fs::write(
+            &input_path,
+            format!(
+                "{}\n{}\n",
+                BASE64_STANDARD.encode(&bytes),
+                BASE64_STANDARD.encode(&second)
+            ),
+        )
+        .unwrap();
+
+        edit_in_place(EditOptions {
+            schema: schema_path(),
+            message: Some("SystemEvent".to_owned()),
+            file: Some(input_path.clone()),
+            input_format: InputFormat::Base64,
+            filter: Some(r#".click.x = 100 | .click.y = 42"#.to_owned()),
+            multiple: true,
+        })
+        .unwrap();
+
+        let written = fs::read_to_string(&input_path).unwrap();
+        assert_snapshot!(written);
+    }
+
+    #[test]
+    fn inspect_multiple_hex_lines_loads_each_message() {
+        let dir = tempdir().unwrap();
+        let input_path = Utf8PathBuf::from_path_buf(dir.path().join("input.hex")).unwrap();
+        let mut second = serde_json::from_str::<serde_json::Value>(&sample_json()).unwrap();
+        second["click"]["x"] = serde_json::Value::from(100);
+        second["click"]["y"] = serde_json::Value::from(42);
+        let second_bytes = load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            serde_json::to_string_pretty(&second).unwrap().as_bytes(),
+            InputFormat::Json,
+        )
+        .unwrap()
+        .bytes()
+        .unwrap();
+        fs::write(
+            &input_path,
+            format!(
+                "{}\n{}\n",
+                hex::encode(sample_bytes()),
+                hex::encode(second_bytes)
+            ),
+        )
+        .unwrap();
+
+        let inspectors = inspect_multiple(InspectOptions {
+            schema: schema_path(),
+            message: Some("SystemEvent".to_owned()),
+            file: Some(input_path),
+            input_format: InputFormat::Hex,
+            multiple: true,
+            display_options: DisplayOptions::default(),
+            save_targets: SaveTargets::default(),
+        })
+        .unwrap();
+
+        assert_eq!(inspectors.len(), 2);
+        assert!(
+            inspectors[0]
+                .canonical_json()
+                .unwrap()
+                .contains(r#""x": 42"#)
+        );
+        assert!(
+            inspectors[1]
+                .canonical_json()
+                .unwrap()
+                .contains(r#""x": 100"#)
+        );
     }
 
     #[test]

@@ -50,7 +50,8 @@ impl Drop for Session {
 }
 
 pub(crate) struct App<'a> {
-    inspector: Inspector,
+    inspectors: Vec<Inspector>,
+    current_index: usize,
     json_editor: TextArea<'a>,
     save_targets: SaveTargets,
     display_options: DisplayOptions,
@@ -95,17 +96,21 @@ impl Status {
 impl App<'_> {
     /// Constructs new TUI app widget.
     pub(crate) fn new(
-        inspector: Inspector,
+        inspectors: Vec<Inspector>,
         save_targets: SaveTargets,
         display_options: DisplayOptions,
     ) -> std::result::Result<Self, error_stack::Report<Inspect>> {
-        let json = inspector.canonical_json()?;
+        let json = inspectors
+            .first()
+            .ok_or_else(|| error_stack::Report::new(Inspect).attach("No inspectors were loaded"))?
+            .canonical_json()?;
 
         let mut json_editor = TextArea::new(json.lines().map(ToOwned::to_owned).collect());
         json_editor.set_line_number_style(Style::default().fg(Color::DarkGray));
 
         Ok(Self {
-            inspector,
+            inspectors,
+            current_index: 0,
             json_editor,
             save_targets,
             display_options,
@@ -142,17 +147,17 @@ impl App<'_> {
         let selected_path = self.current_selected_path(&json);
         let enum_selection = selected_path
             .as_ref()
-            .and_then(|path| self.inspector.enum_selection(path));
+            .and_then(|path| self.current_inspector().enum_selection(path));
         let omitted_default_enum_hint = selected_path
             .as_ref()
-            .and_then(|path| self.inspector.omitted_default_enum_hint(path));
+            .and_then(|path| self.current_inspector().omitted_default_enum_hint(path));
         let inline_hints = self.inline_hints(
             enum_selection.as_ref(),
             omitted_default_enum_hint.as_deref(),
         );
         let highlighted_bytes = selected_path
             .as_ref()
-            .and_then(|path| self.inspector.highlighted_byte_indices(path).ok())
+            .and_then(|path| self.current_inspector().highlighted_byte_indices(path).ok())
             .unwrap_or_default();
         let protobuf_text = self.protobuf_text(selected_path.as_ref());
         let protobuf_scroll = self.protobuf_scroll_offset(&protobuf_text, top_left_area.height);
@@ -184,8 +189,9 @@ impl App<'_> {
                     .border_type(BorderType::Plain),
             );
 
+        let message_suffix = self.message_suffix();
         let right_block = Block::default()
-            .title("JSON")
+            .title(format!("JSON{message_suffix}"))
             .borders(Borders::ALL)
             .border_type(BorderType::Plain);
         let right_inner = right_block.inner(right_area);
@@ -278,6 +284,28 @@ impl App<'_> {
 
             event::Event::Key(
                 ev @ KeyEvent {
+                    code: KeyCode::Char('j'),
+                    ..
+                },
+            ) if ev.kind == event::KeyEventKind::Press
+                && ev.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.navigate_message(1);
+            }
+
+            event::Event::Key(
+                ev @ KeyEvent {
+                    code: KeyCode::Char('k'),
+                    ..
+                },
+            ) if ev.kind == event::KeyEventKind::Press
+                && ev.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.navigate_message(-1);
+            }
+
+            event::Event::Key(
+                ev @ KeyEvent {
                     code: KeyCode::Char('['),
                     ..
                 },
@@ -297,7 +325,7 @@ impl App<'_> {
             input => {
                 if self.json_editor.input(input) {
                     let json = self.json_editor.lines().join("\n");
-                    if let Err(error) = self.inspector.apply_json(&json) {
+                    if let Err(error) = self.current_inspector_mut().apply_json(&json) {
                         self.show_error(format!("Parse error: {error}"));
                     } else if matches!(
                         self.visible_status().map(|status| status.kind),
@@ -313,7 +341,7 @@ impl App<'_> {
     }
 
     fn save_outputs(&mut self) {
-        match self.inspector.save(&self.save_targets) {
+        match self.current_inspector().save(&self.save_targets) {
             Ok(paths) => {
                 let message = paths
                     .iter()
@@ -341,7 +369,17 @@ impl App<'_> {
             return status.message.clone();
         }
 
-        format!("Ctrl-C quit | Ctrl-S save | [ ] columns {}", columns,)
+        let message_help = if self.inspectors.len() > 1 {
+            format!(
+                " | Ctrl-J/K line {}/{}",
+                self.current_index + 1,
+                self.inspectors.len()
+            )
+        } else {
+            String::new()
+        };
+
+        format!("Ctrl-C quit | Ctrl-S save{message_help} | [ ] columns {columns}")
     }
 
     fn status_style(&self) -> Style {
@@ -385,17 +423,17 @@ impl App<'_> {
     }
 
     fn current_selected_path(&self, json: &str) -> Option<FieldPath> {
-        if self.inspector.parse_error().is_some() {
+        if self.current_inspector().parse_error().is_some() {
             return None;
         }
 
-        self.inspector
+        self.current_inspector()
             .selected_path_for_json_cursor(json, self.json_editor.cursor())
     }
 
     fn protobuf_text(&self, selected_path: Option<&FieldPath>) -> Text<'static> {
         let lines = self
-            .inspector
+            .current_inspector()
             .protobuf_lines()
             .into_iter()
             .map(|line| {
@@ -427,7 +465,7 @@ impl App<'_> {
         highlighted_bytes: &std::collections::BTreeSet<usize>,
         columns: usize,
     ) -> Text<'static> {
-        match self.inspector.bytes() {
+        match self.current_inspector().bytes() {
             Ok(bytes) => Text::from(render_byte_lines(
                 &bytes,
                 highlighted_bytes,
@@ -444,7 +482,7 @@ impl App<'_> {
         highlighted_bytes: &std::collections::BTreeSet<usize>,
         columns: usize,
     ) -> Text<'static> {
-        match self.inspector.bytes() {
+        match self.current_inspector().bytes() {
             Ok(bytes) => Text::from(render_byte_lines(
                 &bytes,
                 highlighted_bytes,
@@ -526,12 +564,15 @@ impl App<'_> {
             return;
         };
 
-        let Some(variant) = self.inspector.cycle_enum_variant(&selected_path, delta) else {
+        let Some(variant) = self
+            .current_inspector_mut()
+            .cycle_enum_variant(&selected_path, delta)
+        else {
             self.show_info("Move the cursor onto an enum value to switch variants");
             return;
         };
 
-        match self.inspector.canonical_json() {
+        match self.current_inspector().canonical_json() {
             Ok(json) => {
                 let cursor = self.json_editor.cursor();
                 self.json_editor
@@ -541,6 +582,57 @@ impl App<'_> {
             Err(error) => {
                 self.show_error(error.to_string());
             }
+        }
+    }
+
+    fn current_inspector(&self) -> &Inspector {
+        &self.inspectors[self.current_index]
+    }
+
+    fn current_inspector_mut(&mut self) -> &mut Inspector {
+        &mut self.inspectors[self.current_index]
+    }
+
+    fn message_suffix(&self) -> String {
+        if self.inspectors.len() > 1 {
+            format!(" ({}/{})", self.current_index + 1, self.inspectors.len())
+        } else {
+            String::new()
+        }
+    }
+
+    fn navigate_message(&mut self, delta: isize) {
+        if self.inspectors.len() <= 1 {
+            self.show_info("Only one message is loaded");
+            return;
+        }
+
+        let current = self.current_index as isize;
+        let last = self.inspectors.len().saturating_sub(1) as isize;
+        let next = (current + delta).clamp(0, last) as usize;
+
+        if next == self.current_index {
+            self.show_info(format!(
+                "Message {} of {}",
+                self.current_index + 1,
+                self.inspectors.len()
+            ));
+            return;
+        }
+
+        self.current_index = next;
+        match self.current_inspector().canonical_json() {
+            Ok(json) => {
+                self.json_editor
+                    .set_lines(json.lines().map(ToOwned::to_owned).collect(), (0, 0));
+                self.last_status = None;
+                self.show_info(format!(
+                    "Message {} of {}",
+                    self.current_index + 1,
+                    self.inspectors.len()
+                ));
+            }
+            Err(error) => self.show_error(error.to_string()),
         }
     }
 }
@@ -716,8 +808,12 @@ mod tests {
             InputFormat::Binary,
         )
         .unwrap();
-        let mut app =
-            App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
+        let mut app = App::new(
+            vec![inspector],
+            SaveTargets::default(),
+            DisplayOptions::default(),
+        )
+        .unwrap();
 
         let rendered = snapshot_text(&mut app);
 
@@ -733,8 +829,12 @@ mod tests {
             InputFormat::Binary,
         )
         .unwrap();
-        let mut app =
-            App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
+        let mut app = App::new(
+            vec![inspector],
+            SaveTargets::default(),
+            DisplayOptions::default(),
+        )
+        .unwrap();
 
         let rendered = render_text(&mut app);
 
@@ -751,8 +851,12 @@ mod tests {
             InputFormat::Binary,
         )
         .unwrap();
-        let mut app =
-            App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
+        let mut app = App::new(
+            vec![inspector],
+            SaveTargets::default(),
+            DisplayOptions::default(),
+        )
+        .unwrap();
         app.last_status = Some(Status::new(
             StatusKind::Error,
             "Parse error: expected value",
@@ -774,7 +878,7 @@ mod tests {
         )
         .unwrap();
         let mut app = App::new(
-            inspector,
+            vec![inspector],
             SaveTargets {
                 json: Some(Utf8PathBuf::from_path_buf(dir.path().join("message.json")).unwrap()),
                 ..SaveTargets::default()
@@ -807,8 +911,12 @@ mod tests {
             InputFormat::Binary,
         )
         .unwrap();
-        let mut app =
-            App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
+        let mut app = App::new(
+            vec![inspector],
+            SaveTargets::default(),
+            DisplayOptions::default(),
+        )
+        .unwrap();
 
         move_cursor_to(&mut app, "\"seconds\"");
         let json = app.current_json();
@@ -829,7 +937,7 @@ mod tests {
             })
         }));
         let highlighted_bytes = app
-            .inspector
+            .current_inspector()
             .highlighted_byte_indices(selected_path.as_ref().unwrap())
             .unwrap();
         let columns = app.effective_columns_for_pane_width(48);
@@ -857,14 +965,18 @@ mod tests {
             InputFormat::Binary,
         )
         .unwrap();
-        let mut app =
-            App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
+        let mut app = App::new(
+            vec![inspector],
+            SaveTargets::default(),
+            DisplayOptions::default(),
+        )
+        .unwrap();
 
         move_cursor_to(&mut app, "\"button\"");
         let json = app.current_json();
         let selected_path = app.current_selected_path(&json).unwrap();
         let omitted_default_enum_hint = app
-            .inspector
+            .current_inspector()
             .omitted_default_enum_hint(&selected_path)
             .unwrap();
 
@@ -888,8 +1000,12 @@ mod tests {
             InputFormat::Binary,
         )
         .unwrap();
-        let mut app =
-            App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
+        let mut app = App::new(
+            vec![inspector],
+            SaveTargets::default(),
+            DisplayOptions::default(),
+        )
+        .unwrap();
 
         move_cursor_to(&mut app, "\"button\"");
         app.cycle_selected_enum(1);
@@ -913,7 +1029,7 @@ mod tests {
         )
         .unwrap();
         let mut app = App::new(
-            inspector,
+            vec![inspector],
             SaveTargets::default(),
             DisplayOptions { columns: Some(4) },
         )
@@ -925,7 +1041,7 @@ mod tests {
         let selected_path = app.current_selected_path(&json).unwrap();
         let protobuf_text = app.protobuf_text(Some(&selected_path));
         let highlighted_bytes = app
-            .inspector
+            .current_inspector()
             .highlighted_byte_indices(&selected_path)
             .unwrap();
 
@@ -943,7 +1059,7 @@ mod tests {
         )
         .unwrap();
         let app = App::new(
-            inspector,
+            vec![inspector],
             SaveTargets::default(),
             DisplayOptions { columns: Some(8) },
         )
@@ -965,8 +1081,12 @@ mod tests {
             InputFormat::Binary,
         )
         .unwrap();
-        let mut app =
-            App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
+        let mut app = App::new(
+            vec![inspector],
+            SaveTargets::default(),
+            DisplayOptions::default(),
+        )
+        .unwrap();
 
         app.adjust_columns(-8);
         assert_eq!(app.display_options.columns, Some(8));
@@ -986,8 +1106,12 @@ mod tests {
             InputFormat::Binary,
         )
         .unwrap();
-        let mut app =
-            App::new(inspector, SaveTargets::default(), DisplayOptions::default()).unwrap();
+        let mut app = App::new(
+            vec![inspector],
+            SaveTargets::default(),
+            DisplayOptions::default(),
+        )
+        .unwrap();
         app.last_byte_pane_width = 49;
 
         app.adjust_columns(-8);
@@ -1002,6 +1126,55 @@ mod tests {
 
         app.clear_expired_status();
         assert!(app.last_status.is_none());
+    }
+
+    #[test]
+    fn navigating_messages_switches_visible_payload() {
+        let first = load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            &sample_bytes(),
+            InputFormat::Binary,
+        )
+        .unwrap();
+        let mut second_json =
+            serde_json::from_str::<serde_json::Value>(&first.canonical_json().unwrap()).unwrap();
+        second_json["click"]["x"] = serde_json::Value::from(100);
+        second_json["click"]["y"] = serde_json::Value::from(42);
+        let second = load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            serde_json::to_string_pretty(&second_json)
+                .unwrap()
+                .as_bytes(),
+            InputFormat::Json,
+        )
+        .unwrap();
+        let mut app = App::new(
+            vec![first, second],
+            SaveTargets::default(),
+            DisplayOptions::default(),
+        )
+        .unwrap();
+
+        assert!(app.current_json().contains(r#""x": 42"#));
+        assert_eq!(app.message_suffix(), " (1/2)");
+        assert_eq!(
+            app.status_line(),
+            "Ctrl-C quit | Ctrl-S save | Ctrl-J/K line 1/2 | [ ] columns 16"
+        );
+
+        app.navigate_message(1);
+
+        assert!(app.current_json().contains(r#""x": 100"#));
+        assert_eq!(app.message_suffix(), " (2/2)");
+        assert_eq!(app.status_line(), "Message 2 of 2");
+
+        app.last_status = None;
+        assert_eq!(
+            app.status_line(),
+            "Ctrl-C quit | Ctrl-S save | Ctrl-J/K line 2/2 | [ ] columns 16"
+        );
     }
 
     #[test]
