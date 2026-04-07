@@ -15,7 +15,7 @@ use protogen::system_event::{
 use tempfile::tempdir;
 
 use super::*;
-use crate::{json, load_inspector};
+use crate::{json, schema::load_inspector};
 
 fn schema_path() -> Utf8PathBuf {
     Utf8PathBuf::from(concat!(

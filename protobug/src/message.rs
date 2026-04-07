@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, fs};
 use base64::{Engine as _, prelude::BASE64_STANDARD};
 use camino::Utf8PathBuf;
 use error_stack::{Report, ResultExt as _};
-use protobuf::{MessageDyn, reflect::MessageDescriptor, text_format};
+use protobuf::{MessageDyn, reflect::MessageDescriptor};
 
 use crate::{
     enum_edit,
@@ -22,7 +22,7 @@ pub enum InputFormat {
 }
 
 impl InputFormat {
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto",
             Self::Json => "json",
@@ -42,7 +42,7 @@ pub struct SaveTargets {
 }
 
 impl SaveTargets {
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.json.is_none() && self.base64.is_none() && self.hex.is_none() && self.binary.is_none()
     }
 }
@@ -58,14 +58,14 @@ pub(crate) struct EnumSelection {
     pub(crate) current: usize,
 }
 
-pub struct Inspector {
+pub(crate) struct Inspector {
     md: MessageDescriptor,
     data: Box<dyn MessageDyn>,
     parse_error: Option<String>,
 }
 
 impl Inspector {
-    pub fn new(md: MessageDescriptor, data: Box<dyn MessageDyn>) -> Self {
+    pub(crate) fn new(md: MessageDescriptor, data: Box<dyn MessageDyn>) -> Self {
         Self {
             md,
             data,
@@ -73,7 +73,7 @@ impl Inspector {
         }
     }
 
-    pub fn apply_json(&mut self, json: &str) -> Result<(), String> {
+    pub(crate) fn apply_json(&mut self, json: &str) -> Result<(), String> {
         match protobuf_json_mapping::parse_dyn_from_str(&self.md, json) {
             Ok(msg) => {
                 self.data = msg;
@@ -88,11 +88,11 @@ impl Inspector {
         }
     }
 
-    pub fn parse_error(&self) -> Option<&str> {
+    pub(crate) fn parse_error(&self) -> Option<&str> {
         self.parse_error.as_deref()
     }
 
-    pub fn canonical_json(&self) -> std::result::Result<String, Report<Inspect>> {
+    pub(crate) fn canonical_json(&self) -> std::result::Result<String, Report<Inspect>> {
         let json = protobuf_json_mapping::print_to_string_with_options(
             &*self.data,
             &protobuf_json_mapping::PrintOptions {
@@ -108,15 +108,11 @@ impl Inspector {
         serde_json::to_string_pretty(&value).change_context(Inspect)
     }
 
-    pub fn text_view(&self) -> String {
-        text_format::print_to_string_pretty(&*self.data)
-    }
-
     pub(crate) fn protobuf_lines(&self) -> Vec<ProtobufLine> {
         selection::protobuf_lines(&self.md, &*self.data)
     }
 
-    pub fn bytes(&self) -> std::result::Result<Vec<u8>, Report<Inspect>> {
+    pub(crate) fn bytes(&self) -> std::result::Result<Vec<u8>, Report<Inspect>> {
         self.data.write_to_bytes_dyn().change_context(Inspect)
     }
 
@@ -176,41 +172,7 @@ impl Inspector {
         Some(next_variant)
     }
 
-    pub fn hex_view(&self) -> String {
-        match self.bytes() {
-            Ok(bytes) => bytes
-                .iter()
-                .fold(String::new(), |mut buf, byte| {
-                    use std::fmt::Write as _;
-                    write!(buf, "{byte:02x} ")
-                        .expect("formatting bytes into a string should always succeed");
-                    buf
-                })
-                .trim_end()
-                .to_owned(),
-            Err(err) => format!("<serialization error: {err}>"),
-        }
-    }
-
-    pub fn ascii_view(&self) -> String {
-        match self.bytes() {
-            Ok(bytes) => bytes.iter().fold(String::new(), |mut buf, byte| {
-                use std::fmt::Write as _;
-                let preview = match byte {
-                    byte if byte.is_ascii_whitespace() => ' ',
-                    byte if byte.is_ascii_graphic() => char::from(*byte),
-                    _ => '.',
-                };
-
-                write!(buf, "{preview}")
-                    .expect("formatting bytes into a string should always succeed");
-                buf
-            }),
-            Err(err) => format!("<serialization error: {err}>"),
-        }
-    }
-
-    pub fn save(
+    pub(crate) fn save(
         &self,
         targets: &SaveTargets,
     ) -> std::result::Result<Vec<Utf8PathBuf>, Report<Inspect>> {

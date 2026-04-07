@@ -13,7 +13,7 @@ use tempfile::tempdir;
 use tui_textarea::CursorMove;
 
 use super::*;
-use crate::{DisplayOptions, InputFormat, load_inspector};
+use crate::{DisplayOptions, InputFormat, schema::load_inspector};
 
 fn schema_path() -> Utf8PathBuf {
     Utf8PathBuf::from(concat!(

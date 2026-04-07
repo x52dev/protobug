@@ -781,7 +781,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{InputFormat, load_inspector};
+    use crate::{InputFormat, schema::load_inspector};
 
     fn sample_message() -> SystemEvent {
         SystemEvent {

@@ -18,15 +18,14 @@ use ratatui::{
 };
 use tui_textarea::TextArea;
 
+use self::render::{
+    adjust_width, auto_columns_for_pane_width, enum_hint_style, highlight_style, render_byte_lines,
+    scroll_offset_for_line,
+};
 use crate::{
     error::Inspect,
     message::{DisplayOptions, EnumSelection, Inspector, SaveTargets},
     selection::{self, FieldPath},
-};
-
-use self::render::{
-    adjust_width, auto_columns_for_pane_width, enum_hint_style, highlight_style, render_byte_lines,
-    scroll_offset_for_line,
 };
 
 pub type Tui = Terminal<CrosstermBackend<io::Stdout>>;

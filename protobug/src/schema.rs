@@ -34,7 +34,7 @@ pub(crate) fn validate_schema(
     Ok(text_format::print_to_string_pretty(fd))
 }
 
-pub fn load_inspector(
+pub(crate) fn load_inspector(
     schema: &Utf8Path,
     message: Option<&str>,
     raw_input: &[u8],
@@ -58,7 +58,7 @@ pub fn load_inspector(
     Ok(Inspector::new(md, msg))
 }
 
-pub fn available_message_names(fd: &FileDescriptor) -> Vec<String> {
+pub(crate) fn available_message_names(fd: &FileDescriptor) -> Vec<String> {
     let mut names = Vec::new();
 
     for message in fd.messages() {
