@@ -1,3 +1,7 @@
+mod render;
+#[cfg(test)]
+mod tests;
+
 use std::{
     io,
     time::{Duration, Instant},
@@ -16,8 +20,13 @@ use tui_textarea::TextArea;
 
 use crate::{
     error::Inspect,
-    inspector::{DisplayOptions, EnumSelection, Inspector, SaveTargets},
+    message::{DisplayOptions, EnumSelection, Inspector, SaveTargets},
     selection::{self, FieldPath},
+};
+
+use self::render::{
+    adjust_width, auto_columns_for_pane_width, enum_hint_style, highlight_style, render_byte_lines,
+    scroll_offset_for_line,
 };
 
 pub type Tui = Terminal<CrosstermBackend<io::Stdout>>;
@@ -27,7 +36,6 @@ pub(crate) struct Session {
 }
 
 impl Session {
-    /// Sets up terminal for TUI display.
     pub(crate) fn new() -> io::Result<Self> {
         execute!(io::stdout(), terminal::EnterAlternateScreen)?;
         terminal::enable_raw_mode()?;
@@ -94,7 +102,6 @@ impl Status {
 }
 
 impl App<'_> {
-    /// Constructs new TUI app widget.
     pub(crate) fn new(
         inspectors: Vec<Inspector>,
         save_targets: SaveTargets,
@@ -120,7 +127,6 @@ impl App<'_> {
         })
     }
 
-    /// Runs main execution loop for the TUI app.
     pub(crate) fn run(&mut self, tui: &mut Tui) -> io::Result<()> {
         while !self.exit {
             tui.draw(|frame| self.render_frame(frame))?;
@@ -189,9 +195,8 @@ impl App<'_> {
                     .border_type(BorderType::Plain),
             );
 
-        let message_suffix = self.message_suffix();
         let right_block = Block::default()
-            .title(format!("JSON{message_suffix}"))
+            .title(format!("JSON{}", self.message_suffix()))
             .borders(Borders::ALL)
             .border_type(BorderType::Plain);
         let right_inner = right_block.inner(right_area);
@@ -236,8 +241,6 @@ impl App<'_> {
         }
 
         match event::read()? {
-            // check that the event is a key press event as crossterm also emits
-            // key release and repeat events on Windows
             event::Event::Key(
                 ev @ KeyEvent {
                     code: KeyCode::Char('c'),
@@ -351,9 +354,7 @@ impl App<'_> {
 
                 self.show_info(format!("Saved outputs: {message}"));
             }
-            Err(error) => {
-                self.show_error(error.to_string());
-            }
+            Err(error) => self.show_error(error.to_string()),
         }
     }
 
@@ -579,9 +580,7 @@ impl App<'_> {
                     .set_lines(json.lines().map(ToOwned::to_owned).collect(), cursor);
                 self.show_info(format!("Enum set to {variant}"));
             }
-            Err(error) => {
-                self.show_error(error.to_string());
-            }
+            Err(error) => self.show_error(error.to_string()),
         }
     }
 
@@ -634,584 +633,5 @@ impl App<'_> {
             }
             Err(error) => self.show_error(error.to_string()),
         }
-    }
-}
-
-const COMPACT_COLUMNS: usize = 16;
-const WIDE_COLUMNS: usize = 24;
-
-fn render_byte_lines<F>(
-    bytes: &[u8],
-    highlighted_bytes: &std::collections::BTreeSet<usize>,
-    width: usize,
-    separator: &str,
-    render: F,
-) -> Vec<Line<'static>>
-where
-    F: Fn(u8) -> String,
-{
-    let width = width.max(1);
-
-    bytes
-        .chunks(width)
-        .enumerate()
-        .map(|(chunk_index, chunk)| {
-            let mut spans = Vec::new();
-
-            for (index_in_chunk, byte) in chunk.iter().enumerate() {
-                let index = chunk_index * width + index_in_chunk;
-                let style = if highlighted_bytes.contains(&index) {
-                    highlight_style()
-                } else {
-                    Style::default()
-                };
-
-                spans.push(Span::styled(render(*byte), style));
-
-                if index_in_chunk + 1 < chunk.len() {
-                    spans.push(Span::raw(separator.to_owned()));
-                }
-            }
-
-            Line::from(spans)
-        })
-        .collect()
-}
-
-fn adjust_width(width: usize, delta: isize) -> usize {
-    if delta >= 0 {
-        width.saturating_add(delta as usize).max(1)
-    } else {
-        width.saturating_sub(delta.unsigned_abs()).max(1)
-    }
-}
-
-fn scroll_offset_for_line(line_index: usize, area_height: u16) -> u16 {
-    let visible_lines = usize::from(area_height.saturating_sub(2)).max(1);
-    let top_line = line_index.saturating_sub(visible_lines.saturating_sub(1));
-    top_line.min(u16::MAX as usize) as u16
-}
-
-fn auto_columns_for_pane_width(pane_width: u16) -> usize {
-    if pane_width == 0 {
-        return COMPACT_COLUMNS;
-    }
-
-    let inner_width = usize::from(pane_width.saturating_sub(2));
-
-    if hex_line_width(WIDE_COLUMNS) <= inner_width {
-        WIDE_COLUMNS
-    } else if hex_line_width(COMPACT_COLUMNS) <= inner_width {
-        COMPACT_COLUMNS
-    } else {
-        (1..COMPACT_COLUMNS)
-            .rev()
-            .find(|&columns| hex_line_width(columns) <= inner_width)
-            .unwrap_or(1)
-    }
-}
-
-fn hex_line_width(columns: usize) -> usize {
-    columns.saturating_mul(2) + columns.saturating_sub(1)
-}
-
-fn highlight_style() -> Style {
-    Style::default()
-        .bg(Color::Blue)
-        .fg(Color::White)
-        .add_modifier(Modifier::BOLD)
-}
-
-fn enum_hint_style() -> Style {
-    Style::default()
-        .fg(Color::Yellow)
-        .add_modifier(Modifier::ITALIC)
-}
-
-#[cfg(test)]
-mod tests {
-    use camino::Utf8PathBuf;
-    use insta::assert_snapshot;
-    use protobuf::{
-        EnumOrUnknown, Message as _, MessageField, SpecialFields,
-        well_known_types::timestamp::Timestamp,
-    };
-    use protogen::system_event::{
-        SystemEvent,
-        system_event::{Event as SystemEventVariant, MouseButton, MouseDown},
-    };
-    use ratatui::{Terminal, backend::TestBackend};
-    use tempfile::tempdir;
-    use tui_textarea::CursorMove;
-
-    use super::*;
-    use crate::inspector::{DisplayOptions, InputFormat, load_inspector};
-
-    fn schema_path() -> Utf8PathBuf {
-        Utf8PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../protogen/proto/system-event.proto"
-        ))
-    }
-
-    fn sample_bytes() -> Vec<u8> {
-        SystemEvent {
-            timestamp: MessageField::some(Timestamp {
-                seconds: 1_234_567,
-                nanos: 123,
-                special_fields: SpecialFields::default(),
-            }),
-            reason: Some("user clicked".to_owned()),
-            event: Some(SystemEventVariant::Click(MouseDown {
-                button: EnumOrUnknown::new(MouseButton::Left),
-                x: 42,
-                y: 100,
-                ..Default::default()
-            })),
-            special_fields: SpecialFields::default(),
-        }
-        .write_to_bytes()
-        .unwrap()
-    }
-
-    fn render_text(app: &mut App<'_>) -> String {
-        let backend = TestBackend::new(100, 20);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| app.render_frame(frame)).unwrap();
-
-        let buffer = terminal.backend().buffer();
-
-        buffer
-            .content
-            .chunks(buffer.area.width as usize)
-            .map(|line| line.iter().map(|cell| cell.symbol()).collect::<String>())
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    fn snapshot_text(app: &mut App<'_>) -> String {
-        render_text(app)
-            .lines()
-            .map(str::trim_end)
-            .collect::<Vec<_>>()
-            .join("\n")
-            .trim_end()
-            .to_owned()
-    }
-
-    #[test]
-    fn render_matches_default_layout() {
-        let inspector = load_inspector(
-            schema_path().as_ref(),
-            Some("SystemEvent"),
-            &sample_bytes(),
-            InputFormat::Binary,
-        )
-        .unwrap();
-        let mut app = App::new(
-            vec![inspector],
-            SaveTargets::default(),
-            DisplayOptions::default(),
-        )
-        .unwrap();
-
-        let rendered = snapshot_text(&mut app);
-
-        assert_snapshot!(rendered);
-    }
-
-    #[test]
-    fn json_panel_shows_line_numbers() {
-        let inspector = load_inspector(
-            schema_path().as_ref(),
-            Some("SystemEvent"),
-            &sample_bytes(),
-            InputFormat::Binary,
-        )
-        .unwrap();
-        let mut app = App::new(
-            vec![inspector],
-            SaveTargets::default(),
-            DisplayOptions::default(),
-        )
-        .unwrap();
-
-        let rendered = render_text(&mut app);
-
-        assert!(rendered.contains("1 {"));
-        assert!(rendered.contains("4     \"x\": 42,"));
-    }
-
-    #[test]
-    fn render_matches_error_layout() {
-        let inspector = load_inspector(
-            schema_path().as_ref(),
-            Some("SystemEvent"),
-            &sample_bytes(),
-            InputFormat::Binary,
-        )
-        .unwrap();
-        let mut app = App::new(
-            vec![inspector],
-            SaveTargets::default(),
-            DisplayOptions::default(),
-        )
-        .unwrap();
-        app.last_status = Some(Status::new(
-            StatusKind::Error,
-            "Parse error: expected value",
-        ));
-
-        let rendered = snapshot_text(&mut app);
-
-        assert_snapshot!(rendered);
-    }
-
-    #[test]
-    fn save_action_updates_status_message() {
-        let dir = tempdir().unwrap();
-        let inspector = load_inspector(
-            schema_path().as_ref(),
-            Some("SystemEvent"),
-            &sample_bytes(),
-            InputFormat::Binary,
-        )
-        .unwrap();
-        let mut app = App::new(
-            vec![inspector],
-            SaveTargets {
-                json: Some(Utf8PathBuf::from_path_buf(dir.path().join("message.json")).unwrap()),
-                ..SaveTargets::default()
-            },
-            DisplayOptions::default(),
-        )
-        .unwrap();
-
-        app.save_outputs();
-
-        assert!(matches!(
-            app.last_status.as_ref().map(|status| status.kind),
-            Some(StatusKind::Info)
-        ));
-        assert!(
-            app.last_status
-                .as_ref()
-                .unwrap()
-                .message
-                .contains("Saved outputs:")
-        );
-    }
-
-    #[test]
-    fn render_highlights_related_panes_for_selected_json_field() {
-        let inspector = load_inspector(
-            schema_path().as_ref(),
-            Some("SystemEvent"),
-            &sample_bytes(),
-            InputFormat::Binary,
-        )
-        .unwrap();
-        let mut app = App::new(
-            vec![inspector],
-            SaveTargets::default(),
-            DisplayOptions::default(),
-        )
-        .unwrap();
-
-        move_cursor_to(&mut app, "\"seconds\"");
-        let json = app.current_json();
-        let selected_path = app.current_selected_path(&json);
-        assert_eq!(
-            selected_path,
-            Some(vec![
-                selection::FieldPathSegment::Field("timestamp".to_owned()),
-                selection::FieldPathSegment::Field("seconds".to_owned()),
-            ])
-        );
-        let protobuf = app.protobuf_text(selected_path.as_ref());
-        assert!(protobuf.lines.iter().any(|line| {
-            line.spans.iter().any(|span| {
-                span.content.as_ref().contains("seconds: 1234567")
-                    && span.style.bg == Some(Color::Blue)
-                    && span.style.fg == Some(Color::White)
-            })
-        }));
-        let highlighted_bytes = app
-            .current_inspector()
-            .highlighted_byte_indices(selected_path.as_ref().unwrap())
-            .unwrap();
-        let columns = app.effective_columns_for_pane_width(48);
-        let hex = app.hex_text(&highlighted_bytes, columns);
-        let ascii = app.ascii_text(&highlighted_bytes, columns);
-
-        let highlighted_hex = highlighted_span_contents(&hex);
-        assert!(
-            highlighted_hex
-                .windows(4)
-                .any(|window| window == ["08", "87", "ad", "4b"])
-        );
-
-        let highlighted_ascii = highlighted_span_contents(&ascii);
-        assert_eq!(highlighted_ascii.len(), 4);
-        assert!(highlighted_ascii.contains(&"K".to_owned()));
-    }
-
-    #[test]
-    fn render_shows_hint_for_omitted_default_enum_variant() {
-        let inspector = load_inspector(
-            schema_path().as_ref(),
-            Some("SystemEvent"),
-            &sample_bytes(),
-            InputFormat::Binary,
-        )
-        .unwrap();
-        let mut app = App::new(
-            vec![inspector],
-            SaveTargets::default(),
-            DisplayOptions::default(),
-        )
-        .unwrap();
-
-        move_cursor_to(&mut app, "\"button\"");
-        let json = app.current_json();
-        let selected_path = app.current_selected_path(&json).unwrap();
-        let omitted_default_enum_hint = app
-            .current_inspector()
-            .omitted_default_enum_hint(&selected_path)
-            .unwrap();
-
-        let rendered = render_text(&mut app);
-
-        assert!(rendered.contains("Ctrl-P/Ctrl-N enum:"));
-        assert!(rendered.contains("[Left]"));
-        assert!(rendered.contains("Right"));
-        assert_eq!(
-            omitted_default_enum_hint,
-            "Default enum Left is omitted on the wire"
-        );
-    }
-
-    #[test]
-    fn cycling_selected_enum_updates_json_and_status() {
-        let inspector = load_inspector(
-            schema_path().as_ref(),
-            Some("SystemEvent"),
-            &sample_bytes(),
-            InputFormat::Binary,
-        )
-        .unwrap();
-        let mut app = App::new(
-            vec![inspector],
-            SaveTargets::default(),
-            DisplayOptions::default(),
-        )
-        .unwrap();
-
-        move_cursor_to(&mut app, "\"button\"");
-        app.cycle_selected_enum(1);
-
-        assert!(app.current_json().contains(r#""button": "Right""#));
-        assert_eq!(app.status_line(), "Enum set to Right");
-
-        let rendered = render_text(&mut app);
-        assert!(rendered.contains("Ctrl-P/Ctrl-N enum:"));
-        assert!(rendered.contains("Left"));
-        assert!(rendered.contains("[Right]"));
-    }
-
-    #[test]
-    fn selected_content_scrolls_into_view() {
-        let inspector = load_inspector(
-            schema_path().as_ref(),
-            Some("SystemEvent"),
-            &sample_bytes(),
-            InputFormat::Binary,
-        )
-        .unwrap();
-        let mut app = App::new(
-            vec![inspector],
-            SaveTargets::default(),
-            DisplayOptions { columns: Some(4) },
-        )
-        .unwrap();
-
-        move_cursor_to(&mut app, "\"y\": 100");
-
-        let json = app.current_json();
-        let selected_path = app.current_selected_path(&json).unwrap();
-        let protobuf_text = app.protobuf_text(Some(&selected_path));
-        let highlighted_bytes = app
-            .current_inspector()
-            .highlighted_byte_indices(&selected_path)
-            .unwrap();
-
-        assert!(app.protobuf_scroll_offset(&protobuf_text, 4) > 0);
-        assert!(app.byte_scroll_offset(&highlighted_bytes, 4, 4) > 0);
-    }
-
-    #[test]
-    fn render_respects_shared_display_columns() {
-        let inspector = load_inspector(
-            schema_path().as_ref(),
-            Some("SystemEvent"),
-            &sample_bytes(),
-            InputFormat::Binary,
-        )
-        .unwrap();
-        let app = App::new(
-            vec![inspector],
-            SaveTargets::default(),
-            DisplayOptions { columns: Some(8) },
-        )
-        .unwrap();
-
-        let hex = app.hex_text(&Default::default(), 8);
-        let ascii = app.ascii_text(&Default::default(), 8);
-
-        assert_eq!(hex.lines.len(), 4);
-        assert_eq!(ascii.lines.len(), 4);
-    }
-
-    #[test]
-    fn adjusting_columns_updates_status_message() {
-        let inspector = load_inspector(
-            schema_path().as_ref(),
-            Some("SystemEvent"),
-            &sample_bytes(),
-            InputFormat::Binary,
-        )
-        .unwrap();
-        let mut app = App::new(
-            vec![inspector],
-            SaveTargets::default(),
-            DisplayOptions::default(),
-        )
-        .unwrap();
-
-        app.adjust_columns(-8);
-        assert_eq!(app.display_options.columns, Some(8));
-        assert_eq!(app.status_line(), "Display columns set to 8");
-
-        app.adjust_columns(4);
-        assert_eq!(app.display_options.columns, Some(12));
-        assert_eq!(app.status_line(), "Display columns set to 12");
-    }
-
-    #[test]
-    fn expired_column_status_returns_to_footer_help() {
-        let inspector = load_inspector(
-            schema_path().as_ref(),
-            Some("SystemEvent"),
-            &sample_bytes(),
-            InputFormat::Binary,
-        )
-        .unwrap();
-        let mut app = App::new(
-            vec![inspector],
-            SaveTargets::default(),
-            DisplayOptions::default(),
-        )
-        .unwrap();
-        app.last_byte_pane_width = 49;
-
-        app.adjust_columns(-8);
-        assert_eq!(app.status_line(), "Display columns set to 8");
-
-        app.last_status.as_mut().unwrap().expires_at = Instant::now();
-
-        assert_eq!(
-            app.status_line(),
-            "Ctrl-C quit | Ctrl-S save | [ ] columns 8"
-        );
-
-        app.clear_expired_status();
-        assert!(app.last_status.is_none());
-    }
-
-    #[test]
-    fn navigating_messages_switches_visible_payload() {
-        let first = load_inspector(
-            schema_path().as_ref(),
-            Some("SystemEvent"),
-            &sample_bytes(),
-            InputFormat::Binary,
-        )
-        .unwrap();
-        let mut second_json =
-            serde_json::from_str::<serde_json::Value>(&first.canonical_json().unwrap()).unwrap();
-        second_json["click"]["x"] = serde_json::Value::from(100);
-        second_json["click"]["y"] = serde_json::Value::from(42);
-        let second = load_inspector(
-            schema_path().as_ref(),
-            Some("SystemEvent"),
-            serde_json::to_string_pretty(&second_json)
-                .unwrap()
-                .as_bytes(),
-            InputFormat::Json,
-        )
-        .unwrap();
-        let mut app = App::new(
-            vec![first, second],
-            SaveTargets::default(),
-            DisplayOptions::default(),
-        )
-        .unwrap();
-
-        assert!(app.current_json().contains(r#""x": 42"#));
-        assert_eq!(app.message_suffix(), " (1/2)");
-        assert_eq!(
-            app.status_line(),
-            "Ctrl-C quit | Ctrl-S save | Ctrl-J/K line 1/2 | [ ] columns 16"
-        );
-
-        app.navigate_message(1);
-
-        assert!(app.current_json().contains(r#""x": 100"#));
-        assert_eq!(app.message_suffix(), " (2/2)");
-        assert_eq!(app.status_line(), "Message 2 of 2");
-
-        app.last_status = None;
-        assert_eq!(
-            app.status_line(),
-            "Ctrl-C quit | Ctrl-S save | Ctrl-J/K line 2/2 | [ ] columns 16"
-        );
-    }
-
-    #[test]
-    fn auto_columns_expand_when_pane_is_wide_enough() {
-        assert_eq!(auto_columns_for_pane_width(73), 24);
-        assert_eq!(auto_columns_for_pane_width(72), 16);
-        assert_eq!(auto_columns_for_pane_width(25), 8);
-    }
-
-    #[test]
-    fn scroll_offset_keeps_highlighted_line_visible() {
-        assert_eq!(scroll_offset_for_line(0, 4), 0);
-        assert_eq!(scroll_offset_for_line(3, 4), 2);
-        assert_eq!(scroll_offset_for_line(5, 5), 3);
-    }
-
-    fn move_cursor_to(app: &mut App<'_>, needle: &str) {
-        let (row, col) = app
-            .json_editor
-            .lines()
-            .iter()
-            .enumerate()
-            .find_map(|(row, line)| line.find(needle).map(|col| (row, col)))
-            .unwrap();
-
-        app.json_editor
-            .move_cursor(CursorMove::Jump(row as u16, col as u16));
-    }
-
-    fn highlighted_span_contents(text: &Text<'_>) -> Vec<String> {
-        text.lines
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .filter(|span| {
-                span.style.bg == Some(Color::Blue) && span.style.fg == Some(Color::White)
-            })
-            .map(|span| span.content.to_string())
-            .collect()
     }
 }
