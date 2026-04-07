@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.1
+
 - Add message number selector in multi-message inspector.
 
 ## 0.2.0
