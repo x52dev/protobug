@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0
+
 - Jump to last message in message number selector.
 - Show/hide hex display in inspector.
 - Show/hide ASCII display in inspector.
