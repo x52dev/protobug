@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add `edit` subcommand.
+- Support multiple hex/base64 (line-delimited) messages using `--multiple` flag.
+
 ## 0.1.3
 
 - Significantly improve enum support.
