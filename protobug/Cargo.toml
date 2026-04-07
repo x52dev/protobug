@@ -11,30 +11,30 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-anyhow = "1"
+anyhow = { workspace = true }
 base64 = { workspace = true }
 camino = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 crossterm = { workspace = true }
-derive_more = { version = "2", features = ["display", "error"] }
+derive_more = { workspace = true, features = ["display", "error"] }
 error-stack = { workspace = true, features = ["anyhow"] }
 hex = { workspace = true }
-jaq-core = "2"
-jaq-json = { version = "1", features = ["serde_json"] }
-jaq-std = "2"
+jaq-core = { workspace = true }
+jaq-json = { workspace = true, features = ["serde_json"] }
+jaq-std = { workspace = true }
 protobuf = { workspace = true }
-protobuf-json-mapping = "3"
-protobuf-parse = "3"
+protobuf-json-mapping = { workspace = true }
+protobuf-parse = { workspace = true }
 ratatui = { workspace = true }
-serde_json = "1"
-tui-textarea = { package = "tui-textarea-2", version = "0.10.2" }
+serde_json = { workspace = true }
+tui-textarea = { workspace = true }
 
 [dev-dependencies]
-indoc = "2"
-insta = "1.47.2"
-pretty_assertions = "1"
-protogen = { path = "../protogen" }
-tempfile = "3"
+indoc = { workspace = true }
+insta = { workspace = true }
+pretty_assertions = { workspace = true }
+protogen = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

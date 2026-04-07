@@ -12,3 +12,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      default:
+        patterns:
+          - "jaq-*"
+          - "protobuf*"
