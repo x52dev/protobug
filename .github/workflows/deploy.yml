@@ -40,7 +40,7 @@ jobs:
 
     name: Deploy (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
-    if: github.repository == 'x52dev/protobug' && startsWith(github.event.release.tag_name, 'protobug-v')
+    if: github.repository == 'x52dev/protobug' && startsWith(github.event.release.tag_name, 'v')
     timeout-minutes: 60
 
     steps:
