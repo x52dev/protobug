@@ -1,0 +1,16 @@
+---
+source: protobug/src/inspector.rs
+expression: filtered
+---
+{
+  "click": {
+    "button": "Right",
+    "x": 7,
+    "y": 9
+  },
+  "reason": "patched with jaq",
+  "timestamp": {
+    "nanos": 456,
+    "seconds": "1234568"
+  }
+}

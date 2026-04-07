@@ -7,6 +7,11 @@ use std::{
 use base64::prelude::*;
 use camino::{Utf8Path, Utf8PathBuf};
 use error_stack::{IntoReportCompat as _, Report, ResultExt as _};
+use jaq_core::{
+    Ctx,
+    load::{Arena, File, Loader},
+};
+use jaq_json::Val as JaqVal;
 use protobuf::{
     MessageDyn,
     descriptor::FileDescriptorProto,
@@ -27,6 +32,7 @@ use crate::{
 pub enum InputFormat {
     #[default]
     Auto,
+    Json,
     Base64,
     Hex,
     Binary,
@@ -36,6 +42,7 @@ impl InputFormat {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto",
+            Self::Json => "json",
             Self::Base64 => "base64",
             Self::Hex => "hex",
             Self::Binary => "binary",
@@ -65,6 +72,14 @@ pub struct InspectOptions {
     pub input_format: InputFormat,
     pub display_options: DisplayOptions,
     pub save_targets: SaveTargets,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditOptions {
+    pub schema: Utf8PathBuf,
+    pub message: Option<String>,
+    pub file: Option<Utf8PathBuf>,
+    pub filter: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -290,6 +305,18 @@ pub fn inspect_to_json(options: InspectOptions) -> std::result::Result<String, R
     inspect(options)?.canonical_json()
 }
 
+pub fn inspect_to_bytes(options: InspectOptions) -> std::result::Result<Vec<u8>, Report<Inspect>> {
+    inspect(options)?.bytes()
+}
+
+pub fn edit_to_json(options: EditOptions) -> std::result::Result<String, Report<Inspect>> {
+    edit(options)?.canonical_json()
+}
+
+pub fn edit_to_bytes(options: EditOptions) -> std::result::Result<Vec<u8>, Report<Inspect>> {
+    edit(options)?.bytes()
+}
+
 fn inspect(options: InspectOptions) -> std::result::Result<Inspector, Report<Inspect>> {
     let input = read_input(options.file.as_deref())?;
     load_inspector(
@@ -297,6 +324,22 @@ fn inspect(options: InspectOptions) -> std::result::Result<Inspector, Report<Ins
         options.message.as_deref(),
         &input,
         options.input_format,
+    )
+}
+
+fn edit(options: EditOptions) -> std::result::Result<Inspector, Report<Inspect>> {
+    let input = read_input(options.file.as_deref())?;
+    let json = json_input_as_text(&input)?;
+    let filtered = match options.filter.as_deref() {
+        Some(filter) => apply_json_filter(json, filter)?,
+        None => json.to_owned(),
+    };
+
+    load_inspector(
+        options.schema.as_ref(),
+        options.message.as_deref(),
+        filtered.as_bytes(),
+        InputFormat::Json,
     )
 }
 
@@ -329,15 +372,20 @@ pub fn load_inspector(
     raw_input: &[u8],
     input_format: InputFormat,
 ) -> std::result::Result<Inspector, Report<Inspect>> {
-    let fd = load_file_descriptor(schema)?;
-    let md = select_message(&fd, message)
-        .attach_with(|| format!("Schema file: {schema}"))
-        .change_context(Inspect)?;
-    let decoded = decode_input(raw_input, input_format)?;
-    let msg = md
-        .parse_from_bytes(&decoded)
-        .attach_with(|| format!("Message type: {}", md.name_to_package()))
-        .change_context(Inspect)?;
+    let md = load_message_descriptor(schema, message)?;
+    let msg = match input_format {
+        InputFormat::Json => {
+            protobuf_json_mapping::parse_dyn_from_str(&md, json_input_as_text(raw_input)?)
+                .attach_with(|| format!("Message type: {}", md.name_to_package()))
+                .change_context(Inspect)?
+        }
+        _ => {
+            let decoded = decode_input(raw_input, input_format)?;
+            md.parse_from_bytes(&decoded)
+                .attach_with(|| format!("Message type: {}", md.name_to_package()))
+                .change_context(Inspect)?
+        }
+    };
 
     Ok(Inspector::new(md, msg))
 }
@@ -363,7 +411,9 @@ fn collect_message_names(message: MessageDescriptor, names: &mut Vec<String>) {
 
 fn read_input(path: Option<&Utf8Path>) -> std::result::Result<Vec<u8>, Report<Inspect>> {
     match path {
-        None => read_stdin(),
+        None => Err(Report::new(Inspect).attach(
+            "No input file was provided. Pass --file <path> or --file - to read from stdin.",
+        )),
         Some(path) if path.as_str() == "-" => read_stdin(),
         Some(path) => fs::read(path)
             .attach_with(|| format!("Input file: {path}"))
@@ -380,6 +430,60 @@ fn read_stdin() -> std::result::Result<Vec<u8>, Report<Inspect>> {
         .change_context(Inspect)?;
 
     Ok(buf)
+}
+
+fn json_input_as_text(raw_input: &[u8]) -> std::result::Result<&str, Report<Inspect>> {
+    std::str::from_utf8(raw_input)
+        .attach("Input format: json")
+        .change_context(Inspect)
+}
+
+fn apply_json_filter(json: &str, filter: &str) -> std::result::Result<String, Report<Inspect>> {
+    let input = serde_json::from_str::<serde_json::Value>(json)
+        .attach("Input format: json")
+        .change_context(Inspect)?;
+    let program = File {
+        code: filter,
+        path: (),
+    };
+    let loader = Loader::new(jaq_std::defs().chain(jaq_json::defs()));
+    let arena = Arena::default();
+    let modules = loader
+        .load(&arena, program)
+        .map_err(|errors| Report::new(Inspect).attach(format!("Invalid filter: {errors:?}")))?;
+    let filter = jaq_core::Compiler::default()
+        .with_funs(jaq_std::funs().chain(jaq_json::funs()))
+        .compile(modules)
+        .map_err(|errors| Report::new(Inspect).attach(format!("Invalid filter: {errors:?}")))?;
+    let inputs = jaq_core::RcIter::new(core::iter::empty());
+    let mut output = filter.run((Ctx::new([], &inputs), JaqVal::from(input)));
+    let first = output
+        .next()
+        .transpose()
+        .map_err(|error| Report::new(Inspect).attach(format!("Filter execution failed: {error}")))?
+        .ok_or_else(|| Report::new(Inspect).attach("Filter produced no results"))?;
+
+    if output.next().is_some() {
+        return Err(Report::new(Inspect).attach(
+            "Filter produced multiple results; use a filter that yields exactly one JSON value",
+        ));
+    }
+
+    let value = serde_json::from_str::<serde_json::Value>(&first.to_string())
+        .attach("Filter output was not valid JSON")
+        .change_context(Inspect)?;
+
+    serde_json::to_string_pretty(&value).change_context(Inspect)
+}
+
+fn load_message_descriptor(
+    schema: &Utf8Path,
+    message: Option<&str>,
+) -> std::result::Result<MessageDescriptor, Report<Inspect>> {
+    let fd = load_file_descriptor(schema)?;
+    select_message(&fd, message)
+        .attach_with(|| format!("Schema file: {schema}"))
+        .change_context(Inspect)
 }
 
 fn load_file_descriptor(schema: &Utf8Path) -> std::result::Result<FileDescriptor, Report<Inspect>> {
@@ -491,6 +595,8 @@ fn decode_input(
     input_format: InputFormat,
 ) -> std::result::Result<Vec<u8>, Report<Inspect>> {
     match input_format {
+        InputFormat::Json => Err(Report::new(Inspect)
+            .attach("Input format: json must be parsed through the JSON message loader")),
         InputFormat::Binary => Ok(raw_input.to_vec()),
         InputFormat::Base64 => decode_base64(raw_input),
         InputFormat::Hex => decode_hex(raw_input),
@@ -850,6 +956,18 @@ mod tests {
         .unwrap()
     }
 
+    fn sample_json() -> String {
+        load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            &sample_bytes(),
+            InputFormat::Binary,
+        )
+        .unwrap()
+        .canonical_json()
+        .unwrap()
+    }
+
     #[test]
     fn auto_detects_base64_and_hex_input() {
         let bytes = sample_bytes();
@@ -864,6 +982,15 @@ mod tests {
             decode_input(hex.as_bytes(), InputFormat::Auto).unwrap(),
             bytes
         );
+    }
+
+    #[test]
+    fn read_input_requires_explicit_stdin_marker() {
+        let error = read_input(None).unwrap_err();
+        let message = format!("{error:?}");
+
+        assert!(message.contains("No input file was provided."));
+        assert!(message.contains("Pass --file <path> or --file - to read from stdin."));
     }
 
     #[test]
@@ -942,6 +1069,51 @@ mod tests {
         .unwrap();
 
         assert_snapshot!(inspector.canonical_json().unwrap());
+    }
+
+    #[test]
+    fn json_filter_matches_snapshot() {
+        let filtered = apply_json_filter(
+            &sample_json(),
+            r#".reason = "patched with jaq" | .click.button = "Right" | .click.x = 7 | .click.y = 9 | .timestamp.nanos = 456 | .timestamp.seconds = "1234568""#,
+        )
+        .unwrap();
+
+        assert_snapshot!(filtered);
+    }
+
+    #[test]
+    fn json_input_round_trips_sample_bytes() {
+        let bytes = load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            sample_json().as_bytes(),
+            InputFormat::Json,
+        )
+        .unwrap()
+        .bytes()
+        .unwrap();
+
+        assert_eq!(bytes, sample_bytes());
+    }
+
+    #[test]
+    fn filtered_edit_bytes_match_snapshot() {
+        let dir = tempdir().unwrap();
+        let input_path = Utf8PathBuf::from_path_buf(dir.path().join("input.json")).unwrap();
+        fs::write(&input_path, sample_json()).unwrap();
+        let bytes = edit_to_bytes(EditOptions {
+            schema: schema_path(),
+            message: Some("SystemEvent".to_owned()),
+            file: Some(input_path),
+            filter: Some(
+                r#".reason = "patched with jaq" | .click.button = "Right" | .click.x = 7 | .click.y = 9 | .timestamp.nanos = 456 | .timestamp.seconds = "1234568""#
+                    .to_owned(),
+            ),
+        })
+        .unwrap();
+
+        assert_snapshot!(hex::encode(&bytes));
     }
 
     #[test]

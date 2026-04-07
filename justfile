@@ -1,3 +1,5 @@
+set positional-arguments := true
+
 _list:
     @just --list
 
@@ -23,8 +25,87 @@ fmt:
     cargo +nightly fmt
 
 # Run protobug.
+gen *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run -p=protogen -- "$@"
+
+# Run protobug.
 run *args:
-    cargo run -p=protobug -- {{ args }}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run -p=protobug -- "$@"
+
+# Print a protobuf payload as canonical JSON.
+proto-json schema file message='' input_format='auto':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    schema={{ quote(schema) }}
+    file={{ quote(file) }}
+    message={{ quote(message) }}
+    input_format={{ quote(input_format) }}
+    args=(cargo run -p=protobug -- inspect --schema "$schema" --file "$file" --input-format "$input_format" --print-json)
+    if [[ -n "$message" ]]; then
+        args+=(--message "$message")
+    fi
+    "${args[@]}"
+
+# Apply a jq filter to a protobuf payload and print the transformed JSON.
+proto-jq schema file filter message='' input_format='auto':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    schema={{ quote(schema) }}
+    file={{ quote(file) }}
+    filter={{ quote(filter) }}
+    message={{ quote(message) }}
+    input_format={{ quote(input_format) }}
+    args=(cargo run -p=protobug -- inspect --schema "$schema" --file "$file" --input-format "$input_format" --print-json)
+    if [[ -n "$message" ]]; then
+        args+=(--message "$message")
+    fi
+    "${args[@]}" | jq "$filter"
+
+# Apply a jq filter to a protobuf payload and emit the encoded result.
+proto-jq-encode schema file filter message='' input_format='auto' output_format='binary':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    schema={{ quote(schema) }}
+    file={{ quote(file) }}
+    filter={{ quote(filter) }}
+    message={{ quote(message) }}
+    input_format={{ quote(input_format) }}
+    output_format={{ quote(output_format) }}
+    inspect_args=(cargo run -p=protobug -- inspect --schema "$schema" --file "$file" --input-format "$input_format" --print-json)
+    encode_args=(cargo run -p=protobug -- encode --schema "$schema" --file - --output-format "$output_format")
+    if [[ -n "$message" ]]; then
+        inspect_args+=(--message "$message")
+        encode_args+=(--message "$message")
+    fi
+    "${inspect_args[@]}" | jq "$filter" | "${encode_args[@]}"
+
+# Apply a jq filter and replace a protobuf payload in place.
+proto-jq-rewrite schema file filter message='' input_format='auto' output_format='binary':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    schema={{ quote(schema) }}
+    file={{ quote(file) }}
+    filter={{ quote(filter) }}
+    message={{ quote(message) }}
+    input_format={{ quote(input_format) }}
+    output_format={{ quote(output_format) }}
+    dir="$(dirname "$file")"
+    base="$(basename "$file")"
+    tmp="$(mktemp "$dir/.${base}.XXXXXX")"
+    trap 'rm -f "$tmp"' EXIT
+    inspect_args=(cargo run -p=protobug -- inspect --schema "$schema" --file "$file" --input-format "$input_format" --print-json)
+    encode_args=(cargo run -p=protobug -- encode --schema "$schema" --file - --output-format "$output_format")
+    if [[ -n "$message" ]]; then
+        inspect_args+=(--message "$message")
+        encode_args+=(--message "$message")
+    fi
+    "${inspect_args[@]}" | jq "$filter" | "${encode_args[@]}" >"$tmp"
+    mv "$tmp" "$file"
+    trap - EXIT
 
 # Lint workspace.
 clippy:

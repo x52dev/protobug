@@ -1,0 +1,5 @@
+---
+source: protobug/src/inspector.rs
+expression: "hex::encode(&bytes)"
+---
+0a070888ad4b10c8031210706174636865642077697468206a61715206080110071809

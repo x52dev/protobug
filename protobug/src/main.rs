@@ -1,12 +1,15 @@
 //! Protobuf Debugging Suite.
 
+use std::io::Write as _;
+
+use base64::Engine as _;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 use derive_more::derive::{Display, Error};
 use error_stack::{Report, ResultExt as _};
 use protobug::{
-    DisplayOptions, InputFormat, InspectOptions, SaveTargets, inspect_to_json, run_inspect,
-    validate_schema,
+    DisplayOptions, EditOptions, InputFormat, InspectOptions, SaveTargets, edit_to_bytes,
+    edit_to_json, inspect_to_bytes, inspect_to_json, run_inspect, validate_schema,
 };
 
 #[derive(Debug, Parser)]
@@ -34,7 +37,7 @@ enum Commands {
         #[arg(long)]
         message: Option<String>,
 
-        /// Input file path. Reads from stdin when omitted or set to "-".
+        /// Input file path. Pass "-" to read from stdin.
         #[arg(long)]
         file: Option<Utf8PathBuf>,
 
@@ -62,18 +65,35 @@ enum Commands {
         #[arg(long)]
         save_base64: Option<Utf8PathBuf>,
 
-        /// Print the decoded message as pretty JSON and exit.
+        /// Print the decoded message in the selected format and exit.
         #[arg(
             long,
-            conflicts_with_all = [
-                "columns",
-                "save_json",
-                "save_bin",
-                "save_hex",
-                "save_base64",
-            ]
+            value_enum,
+            conflicts_with_all = ["columns", "save_json", "save_bin", "save_hex", "save_base64"]
         )]
-        print_json: bool,
+        print_format: Option<OutputFormatArg>,
+    },
+
+    /// Edits a protobuf message starting from JSON input.
+    Edit {
+        #[arg(long)]
+        schema: Utf8PathBuf,
+
+        /// Message name relative to the package in the schema.
+        #[arg(long)]
+        message: Option<String>,
+
+        /// Input JSON file path. Pass "-" to read from stdin.
+        #[arg(long)]
+        file: Option<Utf8PathBuf>,
+
+        /// Jaq filter to run against the input JSON before protobuf encoding.
+        #[arg(long)]
+        filter: Option<String>,
+
+        /// Print the edited message in the selected format.
+        #[arg(long, value_enum, default_value_t = OutputFormatArg::Binary)]
+        print_format: OutputFormatArg,
     },
 }
 
@@ -83,6 +103,14 @@ enum InputFormatArg {
     Base64,
     Hex,
     Binary,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum OutputFormatArg {
+    Json,
+    Binary,
+    Base64,
+    Hex,
 }
 
 impl From<InputFormatArg> for InputFormat {
@@ -104,6 +132,23 @@ fn parse_width(value: &str) -> Result<usize, String> {
     }
 
     Ok(width)
+}
+
+fn write_output(bytes: &[u8], output_format: OutputFormatArg) -> std::io::Result<()> {
+    let mut stdout = std::io::stdout().lock();
+
+    match output_format {
+        OutputFormatArg::Json => {
+            unreachable!("json output is handled before raw output is written")
+        }
+        OutputFormatArg::Binary => stdout.write_all(bytes)?,
+        OutputFormatArg::Base64 => {
+            writeln!(stdout, "{}", base64::prelude::BASE64_STANDARD.encode(bytes))?
+        }
+        OutputFormatArg::Hex => writeln!(stdout, "{}", hex::encode(bytes))?,
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Display, Error)]
@@ -133,7 +178,7 @@ fn main() -> std::result::Result<(), Report<ProtobugError>> {
             save_bin,
             save_hex,
             save_base64,
-            print_json,
+            print_format,
         } => {
             let options = InspectOptions {
                 schema,
@@ -149,13 +194,49 @@ fn main() -> std::result::Result<(), Report<ProtobugError>> {
                 },
             };
 
-            if print_json {
-                println!(
-                    "{}",
-                    inspect_to_json(options).change_context(ProtobugError)?,
-                );
-            } else {
-                run_inspect(options).change_context(ProtobugError)?;
+            match print_format {
+                Some(OutputFormatArg::Json) => {
+                    println!(
+                        "{}",
+                        inspect_to_json(options).change_context(ProtobugError)?,
+                    );
+                }
+                Some(output_format) => {
+                    let bytes = inspect_to_bytes(options).change_context(ProtobugError)?;
+                    write_output(&bytes, output_format)
+                        .change_context(ProtobugError)
+                        .attach("Failed to write encoded protobuf output")?;
+                }
+                None => {
+                    run_inspect(options).change_context(ProtobugError)?;
+                }
+            }
+        }
+
+        Commands::Edit {
+            schema,
+            message,
+            file,
+            filter,
+            print_format,
+        } => {
+            let options = EditOptions {
+                schema,
+                message,
+                file,
+                filter,
+            };
+
+            match print_format {
+                OutputFormatArg::Json => {
+                    println!("{}", edit_to_json(options).change_context(ProtobugError)?);
+                }
+                output_format => {
+                    let bytes = edit_to_bytes(options).change_context(ProtobugError)?;
+                    write_output(&bytes, output_format)
+                        .change_context(ProtobugError)
+                        .attach("Failed to write encoded protobuf output")?;
+                }
             }
         }
     }
