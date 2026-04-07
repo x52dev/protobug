@@ -19,7 +19,7 @@ crossterm = { workspace = true }
 derive_more = { version = "2", features = ["display", "error"] }
 error-stack = { workspace = true, features = ["anyhow"] }
 hex = { workspace = true }
-jaq-core = "2"
+jaq-core = "3"
 jaq-json = { version = "1", features = ["serde_json"] }
 jaq-std = "2"
 protobuf = { workspace = true }
