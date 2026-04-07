@@ -21,7 +21,7 @@ error-stack = { workspace = true, features = ["anyhow"] }
 hex = { workspace = true }
 jaq-core = "2"
 jaq-json = { version = "1", features = ["serde_json"] }
-jaq-std = "2"
+jaq-std = "3"
 protobuf = { workspace = true }
 protobuf-json-mapping = "3"
 protobuf-parse = "3"
