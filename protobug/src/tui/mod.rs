@@ -142,13 +142,18 @@ impl App<'_> {
         let [main_area, footer_area] = root_layout.areas(frame.area());
 
         let layout = Layout::horizontal(Constraint::from_fills([3, 2]));
-        let left_layout = Layout::vertical(Constraint::from_fills([1, 1]));
         let [left_area, right_area] = layout.areas(main_area);
-        let [top_left_area, bottom_left_area] = left_layout.areas(left_area);
-        let byte_layout = Layout::horizontal(Constraint::from_fills([2, 1]));
-        let [hex_area, ascii_area] = byte_layout.areas(bottom_left_area);
-        let display_columns = self.effective_columns_for_pane_width(hex_area.width);
-        self.last_byte_pane_width = hex_area.width;
+        let (top_left_area, bottom_left_area) =
+            if self.display_options.show_hex || self.display_options.show_ascii {
+                let left_layout = Layout::vertical(Constraint::from_fills([1, 1]));
+                let [top_left_area, bottom_left_area] = left_layout.areas(left_area);
+                (top_left_area, Some(bottom_left_area))
+            } else {
+                (left_area, None)
+            };
+        let byte_pane_width = bottom_left_area.map_or(0, |area| self.byte_pane_width(area.width));
+        let display_columns = self.effective_columns_for_pane_width(byte_pane_width);
+        self.last_byte_pane_width = byte_pane_width;
 
         let json = self.current_json();
         let selected_path = self.current_selected_path(&json);
@@ -168,8 +173,9 @@ impl App<'_> {
             .unwrap_or_default();
         let protobuf_text = self.protobuf_text(selected_path.as_ref());
         let protobuf_scroll = self.protobuf_scroll_offset(&protobuf_text, top_left_area.height);
-        let byte_scroll =
-            self.byte_scroll_offset(&highlighted_bytes, display_columns, hex_area.height);
+        let byte_scroll = bottom_left_area.map_or(0, |area| {
+            self.byte_scroll_offset(&highlighted_bytes, display_columns, area.height)
+        });
 
         let para_tf = Paragraph::new(protobuf_text)
             .scroll((protobuf_scroll, 0))
@@ -179,23 +185,6 @@ impl App<'_> {
                     .borders(Borders::ALL)
                     .border_type(BorderType::Plain),
             );
-        let para_hex = Paragraph::new(self.hex_text(&highlighted_bytes, display_columns))
-            .block(
-                Block::default()
-                    .title("Hex")
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Plain),
-            )
-            .scroll((byte_scroll, 0));
-        let para_ascii = Paragraph::new(self.ascii_text(&highlighted_bytes, display_columns))
-            .scroll((byte_scroll, 0))
-            .block(
-                Block::default()
-                    .title("ASCII")
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Plain),
-            );
-
         let right_block = Block::default()
             .title(format!("JSON{}", self.message_suffix()))
             .borders(Borders::ALL)
@@ -203,8 +192,15 @@ impl App<'_> {
         let right_inner = right_block.inner(right_area);
 
         frame.render_widget(para_tf, top_left_area);
-        frame.render_widget(para_hex, hex_area);
-        frame.render_widget(para_ascii, ascii_area);
+        if let Some(bottom_left_area) = bottom_left_area {
+            self.render_byte_panes(
+                frame,
+                bottom_left_area,
+                &highlighted_bytes,
+                display_columns,
+                byte_scroll,
+            );
+        }
 
         if !inline_hints.is_empty() {
             let [editor_area, hint_area] = Layout::vertical([
@@ -296,6 +292,17 @@ impl App<'_> {
 
             event::Event::Key(
                 ev @ KeyEvent {
+                    code: KeyCode::Char('a'),
+                    ..
+                },
+            ) if ev.kind == event::KeyEventKind::Press
+                && ev.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.toggle_ascii_pane();
+            }
+
+            event::Event::Key(
+                ev @ KeyEvent {
                     code: KeyCode::Char('g'),
                     ..
                 },
@@ -325,6 +332,17 @@ impl App<'_> {
                 && ev.modifiers.contains(KeyModifiers::CONTROL) =>
             {
                 self.navigate_message(-1);
+            }
+
+            event::Event::Key(
+                ev @ KeyEvent {
+                    code: KeyCode::Char('x'),
+                    ..
+                },
+            ) if ev.kind == event::KeyEventKind::Press
+                && ev.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.toggle_hex_pane();
             }
 
             event::Event::Key(
@@ -378,6 +396,42 @@ impl App<'_> {
         }
     }
 
+    fn render_byte_panes(
+        &self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        highlighted_bytes: &std::collections::BTreeSet<usize>,
+        columns: usize,
+        byte_scroll: u16,
+    ) {
+        match (
+            self.display_options.show_hex,
+            self.display_options.show_ascii,
+        ) {
+            (true, true) => {
+                let byte_layout = Layout::horizontal(Constraint::from_fills([2, 1]));
+                let [hex_area, ascii_area] = byte_layout.areas(area);
+                frame.render_widget(
+                    self.hex_paragraph(highlighted_bytes, columns, byte_scroll),
+                    hex_area,
+                );
+                frame.render_widget(
+                    self.ascii_paragraph(highlighted_bytes, columns, byte_scroll),
+                    ascii_area,
+                );
+            }
+            (true, false) => frame.render_widget(
+                self.hex_paragraph(highlighted_bytes, columns, byte_scroll),
+                area,
+            ),
+            (false, true) => frame.render_widget(
+                self.ascii_paragraph(highlighted_bytes, columns, byte_scroll),
+                area,
+            ),
+            (false, false) => {}
+        }
+    }
+
     #[cfg(test)]
     fn status_line(&self) -> String {
         self.status_line_for_columns(
@@ -392,7 +446,7 @@ impl App<'_> {
 
         let message_help = if self.inspectors.len() > 1 {
             format!(
-                " | Ctrl-G jump | Ctrl-J/K line {}/{}",
+                " | Ctrl-G picker | Ctrl-J/K msg {}/{}",
                 self.current_index + 1,
                 self.inspectors.len()
             )
@@ -400,7 +454,9 @@ impl App<'_> {
             String::new()
         };
 
-        format!("Ctrl-C quit | Ctrl-S save{message_help} | [ ] columns {columns}")
+        format!(
+            "Ctrl-C quit | Ctrl-S save{message_help} | Ctrl-X hex | Ctrl-A ascii | [ ] columns {columns}"
+        )
     }
 
     fn status_style(&self) -> Style {
@@ -440,17 +496,27 @@ impl App<'_> {
     }
 
     fn render_message_selector(&self, frame: &mut Frame<'_>, selector: &str) {
-        let overlay_area = centered_rect(36, 5, frame.area());
+        let help_line = self.message_selector_help_line();
+        let jump_line = self.message_selector_jump_line();
+        let overlay_area = centered_rect(
+            self.message_selector_width(selector, &help_line, &jump_line),
+            6,
+            frame.area(),
+        );
         let block = Block::default()
-            .title("Go To Line")
+            .title("Go To Message")
             .borders(Borders::ALL)
             .border_type(BorderType::Plain)
             .style(Style::default().bg(Color::Black).fg(Color::White));
         let inner = block.inner(overlay_area);
         let lines = vec![
-            Line::from(format!("Enter line number (1-{})", self.inspectors.len())),
+            Line::from(format!(
+                "Enter message number (1-{})",
+                self.inspectors.len()
+            )),
             Line::from(format!("> {selector}")),
-            Line::from("Enter confirm, Esc cancel"),
+            help_line,
+            jump_line,
         ];
 
         frame.render_widget(Clear, overlay_area);
@@ -459,6 +525,66 @@ impl App<'_> {
             inner.x + 2 + selector.chars().count() as u16,
             inner.y + 1,
         ));
+    }
+
+    fn message_selector_help_line(&self) -> Line<'static> {
+        let label_style = Style::default().fg(Color::DarkGray);
+
+        Line::from(vec![
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(": jump  ", label_style),
+            Span::styled(
+                "Esc",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(": cancel", label_style),
+        ])
+    }
+
+    fn message_selector_jump_line(&self) -> Line<'static> {
+        let label_style = Style::default().fg(Color::DarkGray);
+
+        Line::from(vec![
+            Span::styled(
+                "Ctrl-B",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(": first message  ", label_style),
+            Span::styled(
+                "Ctrl-E",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(": last message", label_style),
+        ])
+    }
+
+    fn message_selector_width(
+        &self,
+        selector: &str,
+        help_line: &Line<'_>,
+        jump_line: &Line<'_>,
+    ) -> u16 {
+        let prompt_width = format!("Enter message number (1-{})", self.inspectors.len())
+            .chars()
+            .count();
+        let input_width = format!("> {selector}").chars().count();
+        let help_width = help_line.width();
+        let jump_width = jump_line.width();
+        let content_width = prompt_width
+            .max(input_width)
+            .max(help_width)
+            .max(jump_width);
+
+        (content_width as u16).saturating_add(4)
     }
 
     fn open_message_selector(&mut self) {
@@ -482,6 +608,12 @@ impl App<'_> {
                 self.show_info("Jump cancelled");
             }
             KeyCode::Enter => self.submit_message_selector(),
+            KeyCode::Home | KeyCode::Char('b') if ev.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.set_current_message(0);
+            }
+            KeyCode::End | KeyCode::Char('e') if ev.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.set_current_message(self.inspectors.len().saturating_sub(1));
+            }
             KeyCode::Backspace => {
                 if let Some(selector) = &mut self.message_selector {
                     selector.pop();
@@ -501,24 +633,56 @@ impl App<'_> {
             return;
         };
 
-        let Ok(line_number) = selector.parse::<usize>() else {
-            self.show_error("Enter a valid line number");
+        let Ok(message_number) = selector.parse::<usize>() else {
+            self.show_error("Enter a valid message number");
             return;
         };
 
-        if !(1..=self.inspectors.len()).contains(&line_number) {
+        if !(1..=self.inspectors.len()).contains(&message_number) {
             self.show_error(format!(
-                "Line number must be between 1 and {}",
+                "Message number must be between 1 and {}",
                 self.inspectors.len()
             ));
             return;
         }
 
-        self.set_current_message(line_number - 1);
+        self.set_current_message(message_number - 1);
     }
 
     fn current_json(&self) -> String {
         self.json_editor.lines().join("\n")
+    }
+
+    fn hex_paragraph(
+        &self,
+        highlighted_bytes: &std::collections::BTreeSet<usize>,
+        columns: usize,
+        byte_scroll: u16,
+    ) -> Paragraph<'static> {
+        Paragraph::new(self.hex_text(highlighted_bytes, columns))
+            .block(
+                Block::default()
+                    .title("Hex")
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Plain),
+            )
+            .scroll((byte_scroll, 0))
+    }
+
+    fn ascii_paragraph(
+        &self,
+        highlighted_bytes: &std::collections::BTreeSet<usize>,
+        columns: usize,
+        byte_scroll: u16,
+    ) -> Paragraph<'static> {
+        Paragraph::new(self.ascii_text(highlighted_bytes, columns))
+            .scroll((byte_scroll, 0))
+            .block(
+                Block::default()
+                    .title("ASCII")
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Plain),
+            )
     }
 
     fn current_selected_path(&self, json: &str) -> Option<FieldPath> {
@@ -604,6 +768,39 @@ impl App<'_> {
             "Display columns set to {}",
             self.display_options.columns.unwrap_or(current_columns),
         ));
+    }
+
+    fn byte_pane_width(&self, bottom_left_width: u16) -> u16 {
+        match (
+            self.display_options.show_hex,
+            self.display_options.show_ascii,
+        ) {
+            (true, true) => {
+                let byte_layout = Layout::horizontal(Constraint::from_fills([2, 1]));
+                let [hex_area, _] = byte_layout.areas(Rect::new(0, 0, bottom_left_width, 1));
+                hex_area.width
+            }
+            (true, false) | (false, true) => bottom_left_width,
+            (false, false) => 0,
+        }
+    }
+
+    fn toggle_ascii_pane(&mut self) {
+        self.display_options.show_ascii = !self.display_options.show_ascii;
+        self.show_info(if self.display_options.show_ascii {
+            "ASCII pane shown"
+        } else {
+            "ASCII pane hidden"
+        });
+    }
+
+    fn toggle_hex_pane(&mut self) {
+        self.display_options.show_hex = !self.display_options.show_hex;
+        self.show_info(if self.display_options.show_hex {
+            "Hex pane shown"
+        } else {
+            "Hex pane hidden"
+        });
     }
 
     fn effective_columns_for_pane_width(&self, pane_width: u16) -> usize {

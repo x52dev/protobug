@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Jump to last message in message number selector.
+- Show/hide hex display in inspector.
+- Show/hide ASCII display in inspector.
+
 ## 0.2.1
 
 - Add message number selector in multi-message inspector.

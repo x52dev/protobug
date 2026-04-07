@@ -237,7 +237,10 @@ fn main() -> std::result::Result<(), Report<ProtobugError>> {
                 file,
                 input_format: input_format.into(),
                 multiple,
-                display_options: DisplayOptions { columns },
+                display_options: DisplayOptions {
+                    columns,
+                    ..Default::default()
+                },
                 save_targets: SaveTargets {
                     json: save_json,
                     base64: save_base64,

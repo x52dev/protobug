@@ -47,9 +47,21 @@ impl SaveTargets {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DisplayOptions {
     pub columns: Option<usize>,
+    pub show_hex: bool,
+    pub show_ascii: bool,
+}
+
+impl Default for DisplayOptions {
+    fn default() -> Self {
+        Self {
+            columns: None,
+            show_hex: true,
+            show_ascii: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

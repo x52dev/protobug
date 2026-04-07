@@ -299,7 +299,10 @@ fn selected_content_scrolls_into_view() {
     let mut app = App::new(
         vec![inspector],
         SaveTargets::default(),
-        DisplayOptions { columns: Some(4) },
+        DisplayOptions {
+            columns: Some(4),
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -329,7 +332,10 @@ fn render_respects_shared_display_columns() {
     let app = App::new(
         vec![inspector],
         SaveTargets::default(),
-        DisplayOptions { columns: Some(8) },
+        DisplayOptions {
+            columns: Some(8),
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -389,7 +395,7 @@ fn expired_column_status_returns_to_footer_help() {
 
     assert_eq!(
         app.status_line(),
-        "Ctrl-C quit | Ctrl-S save | [ ] columns 8"
+        "Ctrl-C quit | Ctrl-S save | Ctrl-X hex | Ctrl-A ascii | [ ] columns 8"
     );
 
     app.clear_expired_status();
@@ -429,7 +435,7 @@ fn navigating_messages_switches_visible_payload() {
     assert_eq!(app.message_suffix(), " (1/2)");
     assert_eq!(
         app.status_line(),
-        "Ctrl-C quit | Ctrl-S save | Ctrl-G jump | Ctrl-J/K line 1/2 | [ ] columns 16"
+        "Ctrl-C quit | Ctrl-S save | Ctrl-G picker | Ctrl-J/K msg 1/2 | Ctrl-X hex | Ctrl-A ascii | [ ] columns 16"
     );
 
     app.navigate_message(1);
@@ -441,8 +447,65 @@ fn navigating_messages_switches_visible_payload() {
     app.last_status = None;
     assert_eq!(
         app.status_line(),
-        "Ctrl-C quit | Ctrl-S save | Ctrl-G jump | Ctrl-J/K line 2/2 | [ ] columns 16"
+        "Ctrl-C quit | Ctrl-S save | Ctrl-G picker | Ctrl-J/K msg 2/2 | Ctrl-X hex | Ctrl-A ascii | [ ] columns 16"
     );
+}
+
+#[test]
+fn toggling_hex_pane_hides_it_and_updates_status() {
+    let inspector = load_inspector(
+        schema_path().as_ref(),
+        Some("SystemEvent"),
+        &sample_bytes(),
+        InputFormat::Binary,
+    )
+    .unwrap();
+    let mut app = App::new(
+        vec![inspector],
+        SaveTargets::default(),
+        DisplayOptions::default(),
+    )
+    .unwrap();
+
+    app.toggle_hex_pane();
+
+    assert!(!app.display_options.show_hex);
+    assert_eq!(app.status_line(), "Hex pane hidden");
+
+    app.last_status = None;
+    let rendered = render_text(&mut app);
+    assert!(!rendered.contains("Hex"));
+    assert!(rendered.contains("ASCII"));
+}
+
+#[test]
+fn hiding_both_byte_panes_removes_them_from_layout() {
+    let inspector = load_inspector(
+        schema_path().as_ref(),
+        Some("SystemEvent"),
+        &sample_bytes(),
+        InputFormat::Binary,
+    )
+    .unwrap();
+    let mut app = App::new(
+        vec![inspector],
+        SaveTargets::default(),
+        DisplayOptions::default(),
+    )
+    .unwrap();
+
+    app.toggle_hex_pane();
+    app.toggle_ascii_pane();
+
+    assert!(!app.display_options.show_hex);
+    assert!(!app.display_options.show_ascii);
+    assert_eq!(app.status_line(), "ASCII pane hidden");
+
+    app.last_status = None;
+    let rendered = render_text(&mut app);
+    assert!(!rendered.contains("Hex"));
+    assert!(!rendered.contains("ASCII"));
+    assert!(rendered.contains("Protobuf"));
 }
 
 #[test]
@@ -471,13 +534,57 @@ fn opening_message_selector_renders_modal() {
     app.open_message_selector();
 
     let rendered = render_text(&mut app);
-    assert!(rendered.contains("Go To Line"));
-    assert!(rendered.contains("Enter line number (1-2)"));
+    assert!(rendered.contains("Go To Message"));
+    assert!(rendered.contains("Enter message number (1-2)"));
     assert!(rendered.contains("> 1"));
+    assert!(rendered.contains("Enter: jump  Esc: cancel"));
+    assert!(rendered.contains("Ctrl-B: first message  Ctrl-E: last message"));
 }
 
 #[test]
-fn message_selector_submit_jumps_to_requested_line() {
+fn message_selector_help_lines_use_distinct_key_colors() {
+    let first = load_inspector(
+        schema_path().as_ref(),
+        Some("SystemEvent"),
+        &sample_bytes(),
+        InputFormat::Binary,
+    )
+    .unwrap();
+    let second = load_inspector(
+        schema_path().as_ref(),
+        Some("SystemEvent"),
+        &sample_bytes(),
+        InputFormat::Binary,
+    )
+    .unwrap();
+    let app = App::new(
+        vec![first, second],
+        SaveTargets::default(),
+        DisplayOptions::default(),
+    )
+    .unwrap();
+
+    let help_line = app.message_selector_help_line();
+    let jump_line = app.message_selector_jump_line();
+
+    assert_eq!(help_line.spans[0].content.as_ref(), "Enter");
+    assert_eq!(help_line.spans[0].style.fg, Some(Color::Green));
+    assert!(
+        help_line.spans[0]
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD)
+    );
+    assert_eq!(help_line.spans[2].content.as_ref(), "Esc");
+    assert_eq!(help_line.spans[2].style.fg, Some(Color::Red));
+    assert_eq!(jump_line.spans[0].content.as_ref(), "Ctrl-B");
+    assert_eq!(jump_line.spans[0].style.fg, Some(Color::Cyan));
+    assert_eq!(jump_line.spans[2].content.as_ref(), "Ctrl-E");
+    assert_eq!(jump_line.spans[2].style.fg, Some(Color::Yellow));
+}
+
+#[test]
+fn message_selector_submit_jumps_to_requested_message() {
     let first = load_inspector(
         schema_path().as_ref(),
         Some("SystemEvent"),
@@ -514,7 +621,7 @@ fn message_selector_submit_jumps_to_requested_line() {
 }
 
 #[test]
-fn message_selector_rejects_out_of_range_line() {
+fn message_selector_rejects_out_of_range_message() {
     let first = load_inspector(
         schema_path().as_ref(),
         Some("SystemEvent"),
@@ -541,7 +648,82 @@ fn message_selector_rejects_out_of_range_line() {
     app.submit_message_selector();
 
     assert_eq!(app.current_index, 0);
-    assert_eq!(app.status_line(), "Line number must be between 1 and 2");
+    assert_eq!(app.status_line(), "Message number must be between 1 and 2");
+}
+
+#[test]
+fn message_selector_last_message_shortcut_jumps_to_end() {
+    let first = load_inspector(
+        schema_path().as_ref(),
+        Some("SystemEvent"),
+        &sample_bytes(),
+        InputFormat::Binary,
+    )
+    .unwrap();
+    let mut second_json =
+        serde_json::from_str::<serde_json::Value>(&first.canonical_json().unwrap()).unwrap();
+    second_json["click"]["x"] = serde_json::Value::from(100);
+    let second = load_inspector(
+        schema_path().as_ref(),
+        Some("SystemEvent"),
+        serde_json::to_string_pretty(&second_json)
+            .unwrap()
+            .as_bytes(),
+        InputFormat::Json,
+    )
+    .unwrap();
+    let mut app = App::new(
+        vec![first, second],
+        SaveTargets::default(),
+        DisplayOptions::default(),
+    )
+    .unwrap();
+
+    app.open_message_selector();
+    app.handle_message_selector_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
+
+    assert!(app.message_selector.is_none());
+    assert_eq!(app.current_index, 1);
+    assert!(app.current_json().contains(r#""x": 100"#));
+    assert_eq!(app.status_line(), "Message 2 of 2");
+}
+
+#[test]
+fn message_selector_first_message_shortcut_jumps_to_start() {
+    let first = load_inspector(
+        schema_path().as_ref(),
+        Some("SystemEvent"),
+        &sample_bytes(),
+        InputFormat::Binary,
+    )
+    .unwrap();
+    let mut second_json =
+        serde_json::from_str::<serde_json::Value>(&first.canonical_json().unwrap()).unwrap();
+    second_json["click"]["x"] = serde_json::Value::from(100);
+    let second = load_inspector(
+        schema_path().as_ref(),
+        Some("SystemEvent"),
+        serde_json::to_string_pretty(&second_json)
+            .unwrap()
+            .as_bytes(),
+        InputFormat::Json,
+    )
+    .unwrap();
+    let mut app = App::new(
+        vec![first, second],
+        SaveTargets::default(),
+        DisplayOptions::default(),
+    )
+    .unwrap();
+
+    app.navigate_message(1);
+    app.open_message_selector();
+    app.handle_message_selector_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+
+    assert!(app.message_selector.is_none());
+    assert_eq!(app.current_index, 0);
+    assert!(app.current_json().contains(r#""x": 42"#));
+    assert_eq!(app.status_line(), "Message 1 of 2");
 }
 
 #[test]
