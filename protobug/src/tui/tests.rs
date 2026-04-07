@@ -429,7 +429,7 @@ fn navigating_messages_switches_visible_payload() {
     assert_eq!(app.message_suffix(), " (1/2)");
     assert_eq!(
         app.status_line(),
-        "Ctrl-C quit | Ctrl-S save | Ctrl-J/K line 1/2 | [ ] columns 16"
+        "Ctrl-C quit | Ctrl-S save | Ctrl-G jump | Ctrl-J/K line 1/2 | [ ] columns 16"
     );
 
     app.navigate_message(1);
@@ -441,8 +441,107 @@ fn navigating_messages_switches_visible_payload() {
     app.last_status = None;
     assert_eq!(
         app.status_line(),
-        "Ctrl-C quit | Ctrl-S save | Ctrl-J/K line 2/2 | [ ] columns 16"
+        "Ctrl-C quit | Ctrl-S save | Ctrl-G jump | Ctrl-J/K line 2/2 | [ ] columns 16"
     );
+}
+
+#[test]
+fn opening_message_selector_renders_modal() {
+    let first = load_inspector(
+        schema_path().as_ref(),
+        Some("SystemEvent"),
+        &sample_bytes(),
+        InputFormat::Binary,
+    )
+    .unwrap();
+    let second = load_inspector(
+        schema_path().as_ref(),
+        Some("SystemEvent"),
+        &sample_bytes(),
+        InputFormat::Binary,
+    )
+    .unwrap();
+    let mut app = App::new(
+        vec![first, second],
+        SaveTargets::default(),
+        DisplayOptions::default(),
+    )
+    .unwrap();
+
+    app.open_message_selector();
+
+    let rendered = render_text(&mut app);
+    assert!(rendered.contains("Go To Line"));
+    assert!(rendered.contains("Enter line number (1-2)"));
+    assert!(rendered.contains("> 1"));
+}
+
+#[test]
+fn message_selector_submit_jumps_to_requested_line() {
+    let first = load_inspector(
+        schema_path().as_ref(),
+        Some("SystemEvent"),
+        &sample_bytes(),
+        InputFormat::Binary,
+    )
+    .unwrap();
+    let mut second_json =
+        serde_json::from_str::<serde_json::Value>(&first.canonical_json().unwrap()).unwrap();
+    second_json["click"]["x"] = serde_json::Value::from(100);
+    let second = load_inspector(
+        schema_path().as_ref(),
+        Some("SystemEvent"),
+        serde_json::to_string_pretty(&second_json)
+            .unwrap()
+            .as_bytes(),
+        InputFormat::Json,
+    )
+    .unwrap();
+    let mut app = App::new(
+        vec![first, second],
+        SaveTargets::default(),
+        DisplayOptions::default(),
+    )
+    .unwrap();
+
+    app.open_message_selector();
+    app.message_selector = Some("2".to_owned());
+    app.submit_message_selector();
+
+    assert!(app.message_selector.is_none());
+    assert!(app.current_json().contains(r#""x": 100"#));
+    assert_eq!(app.status_line(), "Message 2 of 2");
+}
+
+#[test]
+fn message_selector_rejects_out_of_range_line() {
+    let first = load_inspector(
+        schema_path().as_ref(),
+        Some("SystemEvent"),
+        &sample_bytes(),
+        InputFormat::Binary,
+    )
+    .unwrap();
+    let second = load_inspector(
+        schema_path().as_ref(),
+        Some("SystemEvent"),
+        &sample_bytes(),
+        InputFormat::Binary,
+    )
+    .unwrap();
+    let mut app = App::new(
+        vec![first, second],
+        SaveTargets::default(),
+        DisplayOptions::default(),
+    )
+    .unwrap();
+
+    app.open_message_selector();
+    app.message_selector = Some("3".to_owned());
+    app.submit_message_selector();
+
+    assert_eq!(app.current_index, 0);
+    assert_eq!(app.status_line(), "Line number must be between 1 and 2");
 }
 
 #[test]

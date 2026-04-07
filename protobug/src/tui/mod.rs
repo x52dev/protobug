@@ -14,7 +14,7 @@ use crossterm::{
 use ratatui::{
     Terminal,
     prelude::*,
-    widgets::{Block, BorderType, Borders, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
 use tui_textarea::TextArea;
 
@@ -60,6 +60,7 @@ pub(crate) struct App<'a> {
     inspectors: Vec<Inspector>,
     current_index: usize,
     json_editor: TextArea<'a>,
+    message_selector: Option<String>,
     save_targets: SaveTargets,
     display_options: DisplayOptions,
     last_byte_pane_width: u16,
@@ -118,6 +119,7 @@ impl App<'_> {
             inspectors,
             current_index: 0,
             json_editor,
+            message_selector: None,
             save_targets,
             display_options,
             last_byte_pane_width: 0,
@@ -220,6 +222,10 @@ impl App<'_> {
         }
         frame.render_widget(right_block, right_area);
 
+        if let Some(selector) = &self.message_selector {
+            self.render_message_selector(frame, selector);
+        }
+
         let footer_block = Block::default().borders(Borders::TOP);
         frame.render_widget(
             Paragraph::new(self.status_line_for_columns(display_columns))
@@ -240,6 +246,10 @@ impl App<'_> {
         }
 
         match event::read()? {
+            event::Event::Key(ev) if self.message_selector.is_some() => {
+                self.handle_message_selector_key(ev);
+            }
+
             event::Event::Key(
                 ev @ KeyEvent {
                     code: KeyCode::Char('c'),
@@ -282,6 +292,17 @@ impl App<'_> {
                 && ev.modifiers.contains(KeyModifiers::CONTROL) =>
             {
                 self.cycle_selected_enum(-1);
+            }
+
+            event::Event::Key(
+                ev @ KeyEvent {
+                    code: KeyCode::Char('g'),
+                    ..
+                },
+            ) if ev.kind == event::KeyEventKind::Press
+                && ev.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.open_message_selector();
             }
 
             event::Event::Key(
@@ -371,7 +392,7 @@ impl App<'_> {
 
         let message_help = if self.inspectors.len() > 1 {
             format!(
-                " | Ctrl-J/K line {}/{}",
+                " | Ctrl-G jump | Ctrl-J/K line {}/{}",
                 self.current_index + 1,
                 self.inspectors.len()
             )
@@ -416,6 +437,84 @@ impl App<'_> {
 
     fn show_error(&mut self, message: impl Into<String>) {
         self.show_status(StatusKind::Error, message);
+    }
+
+    fn render_message_selector(&self, frame: &mut Frame<'_>, selector: &str) {
+        let overlay_area = centered_rect(36, 5, frame.area());
+        let block = Block::default()
+            .title("Go To Line")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Plain)
+            .style(Style::default().bg(Color::Black).fg(Color::White));
+        let inner = block.inner(overlay_area);
+        let lines = vec![
+            Line::from(format!("Enter line number (1-{})", self.inspectors.len())),
+            Line::from(format!("> {selector}")),
+            Line::from("Enter confirm, Esc cancel"),
+        ];
+
+        frame.render_widget(Clear, overlay_area);
+        frame.render_widget(Paragraph::new(lines).block(block), overlay_area);
+        frame.set_cursor_position(Position::new(
+            inner.x + 2 + selector.chars().count() as u16,
+            inner.y + 1,
+        ));
+    }
+
+    fn open_message_selector(&mut self) {
+        if self.inspectors.len() <= 1 {
+            self.show_info("Only one message is loaded");
+            return;
+        }
+
+        self.message_selector = Some((self.current_index + 1).to_string());
+        self.last_status = None;
+    }
+
+    fn handle_message_selector_key(&mut self, ev: KeyEvent) {
+        if ev.kind != event::KeyEventKind::Press {
+            return;
+        }
+
+        match ev.code {
+            KeyCode::Esc => {
+                self.message_selector = None;
+                self.show_info("Jump cancelled");
+            }
+            KeyCode::Enter => self.submit_message_selector(),
+            KeyCode::Backspace => {
+                if let Some(selector) = &mut self.message_selector {
+                    selector.pop();
+                }
+            }
+            KeyCode::Char(ch) if ch.is_ascii_digit() => {
+                if let Some(selector) = &mut self.message_selector {
+                    selector.push(ch);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn submit_message_selector(&mut self) {
+        let Some(selector) = self.message_selector.take() else {
+            return;
+        };
+
+        let Ok(line_number) = selector.parse::<usize>() else {
+            self.show_error("Enter a valid line number");
+            return;
+        };
+
+        if !(1..=self.inspectors.len()).contains(&line_number) {
+            self.show_error(format!(
+                "Line number must be between 1 and {}",
+                self.inspectors.len()
+            ));
+            return;
+        }
+
+        self.set_current_message(line_number - 1);
     }
 
     fn current_json(&self) -> String {
@@ -618,7 +717,12 @@ impl App<'_> {
             return;
         }
 
-        self.current_index = next;
+        self.set_current_message(next);
+    }
+
+    fn set_current_message(&mut self, index: usize) {
+        self.current_index = index;
+        self.message_selector = None;
         match self.current_inspector().canonical_json() {
             Ok(json) => {
                 self.json_editor
@@ -633,4 +737,13 @@ impl App<'_> {
             Err(error) => self.show_error(error.to_string()),
         }
     }
+}
+
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let popup_width = width.min(area.width.saturating_sub(2)).max(1);
+    let popup_height = height.min(area.height.saturating_sub(2)).max(1);
+    let x = area.x + area.width.saturating_sub(popup_width) / 2;
+    let y = area.y + area.height.saturating_sub(popup_height) / 2;
+
+    Rect::new(x, y, popup_width, popup_height)
 }
