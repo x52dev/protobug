@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.2.0
+
+
 - Add `edit` subcommand.
 - Support multiple hex/base64 (line-delimited) messages using `--multiple` flag.
 
