@@ -6,5 +6,5 @@ mod tui;
 
 pub use self::inspector::{
     DisplayOptions, InputFormat, InspectOptions, Inspector, SaveTargets, available_message_names,
-    load_inspector, run_inspect, validate_schema,
+    inspect_to_json, load_inspector, run_inspect, validate_schema,
 };

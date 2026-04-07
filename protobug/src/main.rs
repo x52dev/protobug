@@ -5,7 +5,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use derive_more::derive::{Display, Error};
 use error_stack::{Report, ResultExt as _};
 use protobug::{
-    DisplayOptions, InputFormat, InspectOptions, SaveTargets, run_inspect, validate_schema,
+    DisplayOptions, InputFormat, InspectOptions, SaveTargets, inspect_to_json, run_inspect,
+    validate_schema,
 };
 
 #[derive(Debug, Parser)]
@@ -60,6 +61,19 @@ enum Commands {
         /// Save the current message as base64 when Ctrl-S is pressed.
         #[arg(long)]
         save_base64: Option<Utf8PathBuf>,
+
+        /// Print the decoded message as pretty JSON and exit.
+        #[arg(
+            long,
+            conflicts_with_all = [
+                "columns",
+                "save_json",
+                "save_bin",
+                "save_hex",
+                "save_base64",
+            ]
+        )]
+        print_json: bool,
     },
 }
 
@@ -119,8 +133,9 @@ fn main() -> std::result::Result<(), Report<ProtobugError>> {
             save_bin,
             save_hex,
             save_base64,
+            print_json,
         } => {
-            run_inspect(InspectOptions {
+            let options = InspectOptions {
                 schema,
                 message,
                 file,
@@ -132,8 +147,16 @@ fn main() -> std::result::Result<(), Report<ProtobugError>> {
                     hex: save_hex,
                     binary: save_bin,
                 },
-            })
-            .change_context(ProtobugError)?;
+            };
+
+            if print_json {
+                println!(
+                    "{}",
+                    inspect_to_json(options).change_context(ProtobugError)?,
+                );
+            } else {
+                run_inspect(options).change_context(ProtobugError)?;
+            }
         }
     }
 

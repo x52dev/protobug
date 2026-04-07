@@ -274,20 +274,30 @@ impl Inspector {
 }
 
 pub fn run_inspect(options: InspectOptions) -> std::result::Result<(), Report<Inspect>> {
+    let save_targets = options.save_targets.clone();
+    let display_options = options.display_options;
+    let inspector = inspect(options)?;
+
+    let mut terminal = tui::Session::new().change_context(Inspect)?;
+    let mut app =
+        tui::App::new(inspector, save_targets, display_options).change_context(Inspect)?;
+    app.run(terminal.terminal_mut()).change_context(Inspect)?;
+
+    Ok(())
+}
+
+pub fn inspect_to_json(options: InspectOptions) -> std::result::Result<String, Report<Inspect>> {
+    inspect(options)?.canonical_json()
+}
+
+fn inspect(options: InspectOptions) -> std::result::Result<Inspector, Report<Inspect>> {
     let input = read_input(options.file.as_deref())?;
-    let inspector = load_inspector(
+    load_inspector(
         options.schema.as_ref(),
         options.message.as_deref(),
         &input,
         options.input_format,
-    )?;
-
-    let mut terminal = tui::Session::new().change_context(Inspect)?;
-    let mut app = tui::App::new(inspector, options.save_targets, options.display_options)
-        .change_context(Inspect)?;
-    app.run(terminal.terminal_mut()).change_context(Inspect)?;
-
-    Ok(())
+    )
 }
 
 pub fn validate_schema(
@@ -799,6 +809,7 @@ mod tests {
 
     use camino::Utf8PathBuf;
     use indoc::indoc;
+    use insta::assert_snapshot;
     use pretty_assertions::assert_eq;
     use protobuf::{
         EnumOrUnknown, Message as _, MessageField, SpecialFields,
@@ -918,6 +929,19 @@ mod tests {
 
         assert_eq!(inspector.parse_error(), None);
         assert!(inspector.canonical_json().unwrap().contains("\"updated\""));
+    }
+
+    #[test]
+    fn canonical_json_matches_snapshot() {
+        let inspector = load_inspector(
+            schema_path().as_ref(),
+            Some("SystemEvent"),
+            &sample_bytes(),
+            InputFormat::Binary,
+        )
+        .unwrap();
+
+        assert_snapshot!(inspector.canonical_json().unwrap());
     }
 
     #[test]

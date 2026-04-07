@@ -1,0 +1,16 @@
+---
+source: protobug/src/inspector.rs
+expression: inspector.canonical_json().unwrap()
+---
+{
+  "click": {
+    "button": "Left",
+    "x": 42,
+    "y": 100
+  },
+  "reason": "user clicked",
+  "timestamp": {
+    "nanos": 123,
+    "seconds": "1234567"
+  }
+}
