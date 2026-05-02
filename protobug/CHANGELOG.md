@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.3.1
+
+- No significant changes since `0.3.0`.
+
 ## 0.3.0
 
 - Jump to last message in message number selector.
