@@ -5,14 +5,19 @@ on:
     branches: [main]
 
 permissions:
+  attestations: write
   contents: write
-  pull-requests: write
   id-token: write
+  pull-requests: write
 
 jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
+    if: ${{ github.repository == 'x52dev/protobug' }}
+    outputs:
+      releases: ${{ steps.release-plz.outputs.releases }}
+      releases_created: ${{ steps.release-plz.outputs.releases_created }}
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -60,3 +65,71 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_PLZ_RELEASES_JSON: ${{ steps.release-plz.outputs.releases }}
         run: x52-update-release-notes
+
+  upload-assets:
+    name: Upload release assets
+    needs: release
+    if: ${{ needs.release.outputs.releases_created == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-latest, target: universal-apple-darwin }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          - { os: ubuntu-latest, target: aarch64-unknown-linux-gnu }
+          - { os: ubuntu-latest, target: aarch64-unknown-linux-musl }
+          # - { os: ubuntu-latest, target: x86_64-unknown-freebsd }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          # - { os: windows-latest, target: aarch64-pc-windows-msvc }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_NET_GIT_FETCH_WITH_CLI: true
+      CARGO_NET_RETRY: 10
+      CARGO_TERM_COLOR: always
+      RELEASE_TAG: ${{ fromJSON(needs.release.outputs.releases)[0].tag }}
+      RUST_BACKTRACE: 1
+      RUSTUP_MAX_RETRIES: 10
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Install nasm
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          cache: false
+
+      - uses: taiki-e/setup-cross-toolchain-action@3d9770ce98eb7dbcf378563182a5e8031165f75b # v1.41.0
+        with:
+          target: ${{ matrix.target }}
+
+      # TODO: see if this is needed after next deploy
+      # - if: endsWith(matrix.target, 'windows-msvc')
+      #   run: echo "RUSTFLAGS=${RUSTFLAGS} -C target-feature=+crt-static" >> "${GITHUB_ENV}"
+
+      - name: Build and upload to release
+        id: upload-release
+        uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1.30.2
+        with:
+          bin: protobug
+          target: ${{ matrix.target }}
+          checksum: sha256
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: "${{ steps.upload-release.outputs.archive }}.*"
