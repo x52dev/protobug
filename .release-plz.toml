@@ -8,4 +8,4 @@ pr_labels = ["release"]
 [[package]]
 name = "protobug"
 git_release_name = "v{{ version }}"
-git_tag_name = "v{{ version }}"
+git_tag_name = "protobug-v{{ version }}"
