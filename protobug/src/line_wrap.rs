@@ -34,7 +34,7 @@ impl<T: fmt::Display> fmt::Display for LineWrap<T> {
 
             let (line, rest) = split_to(&mut buf, self.wrap_at);
 
-            writeln!(f, "{}", &line)?;
+            writeln!(f, "{}", line)?;
 
             match rest {
                 Some(rest) => buf = rest,
