@@ -104,6 +104,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base64"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b25655df2c3cdd83c5e5b293b88acd880332b2ddadd7c30ac43144fdc0033da9"
+
+[[package]]
 name = "bit-set"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -471,7 +477,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -766,7 +772,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8bdc5a74b0feeb5e6a1dc2dd08c34280a61e37668d10a6a3b27ad69d0fb9ce2e"
 dependencies = [
  "aho-corasick",
- "base64",
+ "base64 0.22.1",
  "bstr",
  "jaq-core",
  "jiff",
@@ -788,7 +794,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1325,7 +1331,7 @@ name = "protobug"
 version = "0.3.3"
 dependencies = [
  "anyhow",
- "base64",
+ "base64 0.23.0",
  "camino",
  "clap",
  "crossterm",
@@ -1352,7 +1358,7 @@ dependencies = [
 name = "protogen"
 version = "0.0.0"
 dependencies = [
- "base64",
+ "base64 0.23.0",
  "hex",
  "protobuf",
  "protobuf-codegen",
@@ -1571,7 +1577,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1772,7 +1778,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1816,7 +1822,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4676b37242ccbd1aabf56edb093a4827dc49086c0ffd764a5705899e0f35f8f7"
 dependencies = [
  "anyhow",
- "base64",
+ "base64 0.22.1",
  "bitflags 2.13.0",
  "fancy-regex",
  "filedescriptor",
