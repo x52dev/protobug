@@ -13,7 +13,7 @@ permissions:
 jobs:
   release:
     name: Release
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     if: ${{ github.repository == 'x52dev/protobug' }}
     outputs:
       releases: ${{ steps.release-plz.outputs.releases }}
