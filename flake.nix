@@ -11,15 +11,9 @@
 
   outputs = inputs@{ flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
-      imports = [ inputs.x52.flakeModules.default ];
-
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       perSystem = { pkgs, config, inputs', system, lib, ... }: {
         formatter = pkgs.nixpkgs-fmt;
-
-        devShells.ci = pkgs.mkShellNoCC {
-          shellHook = config.x52.justRust.shellHook;
-        };
 
         devShells.ci-release = pkgs.mkShellNoCC {
           packages = [
