@@ -43,6 +43,16 @@ jobs:
         with:
           tool: just,nextest
 
+      - name: Install Nix
+        if: runner.os != 'Windows'
+        uses: nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c # v35
+
+      - name: Enter Nix devshell
+        if: runner.os != 'Windows'
+        uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
+        with:
+          arguments: .#ci
+
       - name: Test
         run: just test
 
