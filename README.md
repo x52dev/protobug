@@ -2,6 +2,8 @@
 
 > Protobuf Debugging Suite
 
+[![Discord: Join chat](https://img.shields.io/badge/Discord-Join%20chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/avT6mUYJ2G)
+
 [![asciicast](https://asciinema.org/a/2Xesc9SvbYwvIDri.svg)](https://asciinema.org/a/2Xesc9SvbYwvIDri)
 
 `protobug` is a schema-aware CLI for inspecting and rewriting protobuf payloads. It can decode binary, hex, and base64 payloads, project them into canonical JSON, apply `jaq` filters to that JSON, and re-encode the result back into protobuf bytes.
