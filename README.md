@@ -2,7 +2,7 @@
 
 > Protobuf Debugging Suite
 
-[![Discord: Join chat](https://img.shields.io/badge/Discord-Join%20chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/avT6mUYJ2G)
+[![Chat on Discord](https://img.shields.io/discord/1554698838651179088?label=chat&logo=discord)](https://discord.gg/avT6mUYJ2G)
 
 [![asciicast](https://asciinema.org/a/2Xesc9SvbYwvIDri.svg)](https://asciinema.org/a/2Xesc9SvbYwvIDri)
 
