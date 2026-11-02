@@ -44,7 +44,7 @@ proto-json schema file message='' input_format='auto':
     file={{ quote(file) }}
     message={{ quote(message) }}
     input_format={{ quote(input_format) }}
-    args=(cargo run -p=protobug -- inspect --schema "$schema" --file "$file" --input-format "$input_format" --print-json)
+    args=(cargo run -p=protobug -- inspect --schema "$schema" --file "$file" --input-format "$input_format" --print-format json)
     if [[ -n "$message" ]]; then
         args+=(--message "$message")
     fi
@@ -59,7 +59,7 @@ proto-jq schema file filter message='' input_format='auto':
     filter={{ quote(filter) }}
     message={{ quote(message) }}
     input_format={{ quote(input_format) }}
-    args=(cargo run -p=protobug -- inspect --schema "$schema" --file "$file" --input-format "$input_format" --print-json)
+    args=(cargo run -p=protobug -- inspect --schema "$schema" --file "$file" --input-format "$input_format" --print-format json)
     if [[ -n "$message" ]]; then
         args+=(--message "$message")
     fi
@@ -75,8 +75,8 @@ proto-jq-encode schema file filter message='' input_format='auto' output_format=
     message={{ quote(message) }}
     input_format={{ quote(input_format) }}
     output_format={{ quote(output_format) }}
-    inspect_args=(cargo run -p=protobug -- inspect --schema "$schema" --file "$file" --input-format "$input_format" --print-json)
-    encode_args=(cargo run -p=protobug -- encode --schema "$schema" --file - --output-format "$output_format")
+    inspect_args=(cargo run -p=protobug -- inspect --schema "$schema" --file "$file" --input-format "$input_format" --print-format json)
+    encode_args=(cargo run -p=protobug -- edit --schema "$schema" --file - --input-format json --print-format "$output_format")
     if [[ -n "$message" ]]; then
         inspect_args+=(--message "$message")
         encode_args+=(--message "$message")
@@ -97,8 +97,8 @@ proto-jq-rewrite schema file filter message='' input_format='auto' output_format
     base="$(basename "$file")"
     tmp="$(mktemp "$dir/.${base}.XXXXXX")"
     trap 'rm -f "$tmp"' EXIT
-    inspect_args=(cargo run -p=protobug -- inspect --schema "$schema" --file "$file" --input-format "$input_format" --print-json)
-    encode_args=(cargo run -p=protobug -- encode --schema "$schema" --file - --output-format "$output_format")
+    inspect_args=(cargo run -p=protobug -- inspect --schema "$schema" --file "$file" --input-format "$input_format" --print-format json)
+    encode_args=(cargo run -p=protobug -- edit --schema "$schema" --file - --input-format json --print-format "$output_format")
     if [[ -n "$message" ]]; then
         inspect_args+=(--message "$message")
         encode_args+=(--message "$message")
