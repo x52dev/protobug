@@ -4,45 +4,45 @@
 version: 'v0.0.3'
 workflows:
     '.github/workflows/ci.yml':
-        - 'actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30'
-        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39'
-        - 'zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd'
+        - 'actions-rust-lang/setup-rust-toolchain@v2.0.1'
+        - 'actions/checkout@v7.0.1'
+        - 'taiki-e/install-action@v2.90.3'
+        - 'zizmorcore/zizmor-action@v0.8.1'
     '.github/workflows/release.yml':
-        - 'actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30'
-        - 'actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6'
-        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b'
-        - 'nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a'
-        - 'nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c'
-        - 'release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b'
-        - 'rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9'
-        - 'taiki-e/setup-cross-toolchain-action@12b7ad4acfa95a1476779d6c06699b96ec1691f8'
-        - 'taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6'
+        - 'actions-rust-lang/setup-rust-toolchain@v2.0.1'
+        - 'actions/attest@v4.2.2'
+        - 'actions/checkout@v7.0.1'
+        - 'ilammy/setup-nasm@v1.5.2'
+        - 'nicknovitski/nix-develop@v1.2.1'
+        - 'nixbuild/nix-quick-install-action@v35'
+        - 'release-plz/action@v0.5.148'
+        - 'rust-lang/crates-io-auth-action@v1.0.6'
+        - 'taiki-e/setup-cross-toolchain-action@v1.42.0'
+        - 'taiki-e/upload-rust-binary-action@v1.30.2'
     '.github/workflows/update-homebrew-tap.yml':
-        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510'
-        - 'nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a'
-        - 'nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c'
+        - 'actions/checkout@v7.0.1'
+        - 'actions/create-github-app-token@v3.3.0'
+        - 'nicknovitski/nix-develop@v1.2.1'
+        - 'nixbuild/nix-quick-install-action@v35'
 dependencies:
-    'actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30':
+    'actions-rust-lang/setup-rust-toolchain@v2.0.1':
         ref: 'v2.0.1'
         commit: 'sha1-a188e68d0fd2bd36ad51dccb2b07ba6e75105f30'
         owner_id: 103899579
         repo_id: 482610590
         uses:
             - 'swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0'
-    'actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6':
+    'actions/attest@v4.2.2':
         ref: 'v4.2.2'
         commit: 'sha1-1e69f48acb82d1966a394da916b4c1698aa569d6'
         owner_id: 44036562
         repo_id: 760701061
-    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1':
+    'actions/checkout@v7.0.1':
         ref: 'v7.0.1'
         commit: 'sha1-3d3c42e5aac5ba805825da76410c181273ba90b1'
         owner_id: 44036562
         repo_id: 197814629
-    'actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510':
+    'actions/create-github-app-token@v3.3.0':
         ref: 'v3.3.0'
         commit: 'sha1-64ab729a6294000f5aa4a4bc0b73d1f32bc45510'
         owner_id: 44036562
@@ -57,22 +57,22 @@ dependencies:
         commit: 'sha1-9b3254085494b55a0f7c4c2b3d2d52cc712ce370'
         owner_id: 9919
         repo_id: 259445878
-    'ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b':
+    'ilammy/setup-nasm@v1.5.2':
         ref: 'v1.5.2'
         commit: 'sha1-72793074d3c8cdda771dba85f6deafe00623038b'
         owner_id: 1256587
         repo_id: 211647646
-    'nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a':
+    'nicknovitski/nix-develop@v1.2.1':
         ref: 'v1.2.1'
         commit: 'sha1-9be7cfb4b10451d3390a75dc18ad0465bed4932a'
         owner_id: 151337
         repo_id: 706956179
-    'nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c':
+    'nixbuild/nix-quick-install-action@v35':
         ref: 'v35'
         commit: 'sha1-9f63be77f412a248c9d9a65a4c82cf066cdf8f0c'
         owner_id: 60610456
         repo_id: 296639338
-    'release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b':
+    'release-plz/action@v0.5.148':
         ref: 'v0.5.148'
         commit: 'sha1-66b324fd6c72d05d2a08568492ecdd62bfb8a62b'
         owner_id: 188756284
@@ -86,7 +86,7 @@ dependencies:
         commit: 'sha1-59144859caf016f8b817a2ac9b051578729173c4'
         owner_id: 188756284
         repo_id: 735058483
-    'rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9':
+    'rust-lang/crates-io-auth-action@v1.0.6':
         ref: 'v1.0.6'
         commit: 'sha1-3268eb413133e2960fa4ae0e963ca76380c54cd9'
         owner_id: 5430905
@@ -101,22 +101,22 @@ dependencies:
         commit: 'sha1-1919c4a95903d2c33e4a221102edca87309fc14b'
         owner_id: 43724913
         repo_id: 442947557
-    'taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39':
+    'taiki-e/install-action@v2.90.3':
         ref: 'v2.90.3'
         commit: 'sha1-cfdb7ed4ccc7c7dce37759eae89dc5674b469b39'
         owner_id: 43724913
         repo_id: 442947557
-    'taiki-e/setup-cross-toolchain-action@12b7ad4acfa95a1476779d6c06699b96ec1691f8':
+    'taiki-e/setup-cross-toolchain-action@v1.42.0':
         ref: 'v1.42.0'
         commit: 'sha1-12b7ad4acfa95a1476779d6c06699b96ec1691f8'
         owner_id: 43724913
         repo_id: 461571383
-    'taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6':
+    'taiki-e/upload-rust-binary-action@v1.30.2':
         ref: 'v1.30.2'
         commit: 'sha1-f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6'
         owner_id: 43724913
         repo_id: 335671865
-    'zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd':
+    'zizmorcore/zizmor-action@v0.8.1':
         ref: 'v0.8.1'
         commit: 'sha1-45d7276c9ca790aabd705e31ca99c6185c3e76dd'
         owner_id: 210636713
