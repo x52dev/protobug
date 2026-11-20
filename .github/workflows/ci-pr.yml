@@ -21,11 +21,9 @@ jobs:
           - { name: Linux, os: blacksmith-2vcpu-ubuntu-2404, triple: x86_64-unknown-linux-gnu }
           - { name: macOS, os: blacksmith-6vcpu-macos-latest, triple: x86_64-apple-darwin }
           - { name: Windows, os: blacksmith-2vcpu-windows-2025, triple: x86_64-pc-windows-msvc }
-        version:
-          - { name: stable, version: stable }
-          - { name: beta, version: beta }
+        version: ${{ fromJSON(github.event_name == 'merge_group' && '["stable"]' || '["stable", "beta"]') }}
 
-    name: Test (${{ matrix.target.name }} / ${{ matrix.version.name }})
+    name: Test (${{ matrix.target.name }} / ${{ matrix.version }})
     runs-on: ${{ matrix.target.os }}
 
     steps:
@@ -33,10 +31,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust (${{ matrix.version.version }})
+      - name: Install Rust (${{ matrix.version }})
         uses: actions-rust-lang/setup-rust-toolchain@v2.0.1
         with:
-          toolchain: ${{ matrix.version.version }}
+          toolchain: ${{ matrix.version }}
 
       - name: Install just, nextest
         uses: taiki-e/install-action@v2.90.3
