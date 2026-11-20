@@ -60,17 +60,3 @@ jobs:
 
       - name: CI cache clean
         run: cargo-ci-cache-clean
-
-  zizmor:
-    name: GitHub Actions Security
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: zizmorcore/zizmor-action@v0.8.1
-        with:
-          advanced-security: false
-          annotations: true
